@@ -17,10 +17,12 @@
 package io.aiven.inkless.engine;
 
 import org.apache.kafka.common.TopicIdPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
@@ -29,11 +31,16 @@ import org.apache.kafka.server.util.Scheduler;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.Array;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.ParameterizedType;
 import java.net.URL;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
@@ -41,6 +48,9 @@ import io.aiven.inkless.common.SharedState;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.ControlPlane;
+import io.aiven.inkless.control_plane.CreateTopicAndPartitionsRequest;
+import io.aiven.inkless.control_plane.InMemoryControlPlane;
+import io.aiven.inkless.control_plane.MetadataView;
 import io.aiven.inkless.delete.DeleteRecordsInterceptor;
 import io.aiven.inkless.delete.FileCleaner;
 import io.aiven.inkless.delete.RetentionEnforcer;
@@ -169,6 +179,57 @@ public class DisklessEnginesTest {
             assertSame(original, Thread.currentThread().getContextClassLoader());
         }
         verify(delegate).close();
+    }
+
+    @Test
+    public void nativeOffsetsPreservePartialResultsThroughEngineContract() throws Exception {
+        var known = new TopicIdPartition(Uuid.randomUuid(), 0, "topic");
+        var missing = new TopicIdPartition(Uuid.randomUuid(), 0, "topic");
+        try (var controlPlane = new InMemoryControlPlane(Time.SYSTEM)) {
+            controlPlane.configure(Map.of());
+            controlPlane.createTopicAndPartitions(Set.of(
+                new CreateTopicAndPartitionsRequest(known.topicId(), known.topic(), 0, 1)));
+            var state = mock(SharedState.class);
+            when(state.time()).thenReturn(Time.SYSTEM);
+            when(state.metadata()).thenReturn(mock(MetadataView.class));
+            when(state.controlPlane()).thenReturn(controlPlane);
+            try (var engine = new InklessDisklessEngine(
+                mock(AppendHandler.class), mock(FetchHandler.class), new FetchOffsetHandler(state))) {
+                DisklessEngineContractAssertions.assertOffsetBatch(engine, known, missing, 0L);
+            }
+        }
+    }
+
+    @Test
+    public void everyOptionalCapabilityUsesAndRestoresPluginContext() throws Exception {
+        var original = Thread.currentThread().getContextClassLoader();
+        for (var method : DisklessEngine.class.getMethods()) {
+            if (method.getReturnType() != Optional.class) {
+                continue;
+            }
+            var resultType = (ParameterizedType) method.getGenericReturnType();
+            var capabilityType = (Class<?>) resultType.getActualTypeArguments()[0];
+            var failure = new IllegalStateException("Capability failure");
+            try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader())) {
+                var capability = mock(capabilityType, invocation -> {
+                    assertSame(loader, Thread.currentThread().getContextClassLoader(), method.getName());
+                    throw failure;
+                });
+                var delegate = mock(DisklessEngine.class, invocation ->
+                    invocation.getMethod().equals(method) ? Optional.of(capability) : null);
+                try (var engine = DisklessClassLoaderContext.leased(DisklessEngine.class, delegate,
+                    DisklessClassLoaderRegistry.acquire(new URL[0], loader))) {
+                    var wrapped = ((Optional<?>) method.invoke(engine)).orElseThrow();
+                    var operation = capabilityType.getMethods()[0];
+                    Object[] arguments = Arrays.stream(operation.getParameterTypes())
+                        .map(type -> Array.get(Array.newInstance(type, 1), 0)).toArray();
+                    var thrown = assertThrows(InvocationTargetException.class,
+                        () -> operation.invoke(wrapped, arguments), method.getName());
+                    assertSame(failure, thrown.getCause());
+                    assertSame(original, Thread.currentThread().getContextClassLoader());
+                }
+            }
+        }
     }
 
     @Test

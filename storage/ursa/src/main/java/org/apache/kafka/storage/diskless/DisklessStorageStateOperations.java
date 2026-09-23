@@ -26,6 +26,4 @@ public interface DisklessStorageStateOperations extends Closeable {
     boolean cleanupPartition(TopicIdPartition tp, boolean deletePartition);
 
     Set<TopicIdPartition> snapshotTrackedPartitions();
-
-    boolean cleanupNonOwnedProducerStates(TopicIdPartition tp, Set<String> retainedZones, boolean deleteSnapshot);
 }

@@ -88,6 +88,7 @@ final class UrsaPartitionLog {
                      UrsaStorageState state,
                      DisklessLogMetrics logMetrics,
                      CompletableFuture<Log> logFuture,
+                     TimestampType timestampType,
                      Supplier<AsyncOxiaClient> oxiaClientSupplier,
                      long producerStateSnapshotIntervalMs,
                      int producerStateSnapshotRecordThreshold,
@@ -104,7 +105,7 @@ final class UrsaPartitionLog {
                 topicIdPartition,
                 this::initialized,
                 this::getOrCreateProducerStateManager,
-                state.timestampType(topicIdPartition.topic()),
+                timestampType,
                 state.time(),
                 this::observeAppend);
         this.retention = new PartitionRetention(

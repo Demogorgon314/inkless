@@ -2467,8 +2467,6 @@ class KafkaApisTest extends Logging {
       val context = invocation.getArgument[Option[DisklessRequestContext]](9).get
       assertEquals(request.header.clientId(), context.clientId())
       assertEquals(request.context.listenerName.value(), context.listenerName())
-      assertEquals(brokerId, context.brokerId())
-      assertTrue(context.clientRack().isEmpty)
       statsCallback.getValue.apply(Map(
         tp0 -> new RecordValidationStats(1000L, 5, 100L),
         tp1 -> new RecordValidationStats(2000L, 3, 200L)

@@ -38,7 +38,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -51,12 +50,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+import io.aiven.inkless.engine.DisklessMetadataSnapshot;
+import io.aiven.inkless.engine.DisklessMetadataSnapshot.TopicMetadata;
 import io.lakestream.api.Log;
-import io.lakestream.api.StreamCatalog;
 import io.oxia.client.api.AsyncOxiaClient;
 
 /**
@@ -83,10 +81,7 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     private final ScheduledExecutorService disklessTimer;
     private final ScheduledFuture<?> retentionTask;
     private final Map<String, Object> logConfigDefaults;
-    private final Function<String, Map<String, String>> topicConfigSupplier;
-    private final Function<String, OptionalInt> partitionCountSupplier;
-    /** The last metadata offset this broker applied; stamped on streams it provisions. */
-    private final LongSupplier imageOffsetSupplier;
+    private final Supplier<DisklessMetadataSnapshot> metadata;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object lifecycleLock = new Object();
     private final Object shutdownLock = new Object();
@@ -96,40 +91,19 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     private boolean producerStateCleanupRegistrationSealed;
     private boolean resourcesClosed;
 
-    /**
-     * Creates UrsaStorageState for production use.
-     */
-    public UrsaStorageState(
-            Time time,
-            int brokerId,
-            UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats) {
-        this(time, brokerId, config, brokerTopicStats,
-            (Map<String, Object>) null,
-            (Function<String, Map<String, String>>) null,
-            topic -> OptionalInt.empty(),
-            () -> 0L);
-    }
-
     public UrsaStorageState(
             Time time,
             int brokerId,
             UrsaStorageConfig config,
             BrokerTopicStats brokerTopicStats,
             Map<String, Object> logConfigDefaults,
-            Function<String, Map<String, String>> topicConfigSupplier,
-            Function<String, OptionalInt> partitionCountSupplier,
-            LongSupplier imageOffsetSupplier) {
+            Supplier<DisklessMetadataSnapshot> metadata) {
         this.time = time;
         this.brokerId = brokerId;
         this.config = config;
         this.brokerTopicStats = brokerTopicStats;
         this.logConfigDefaults = logConfigDefaults != null ? logConfigDefaults : Collections.emptyMap();
-        this.topicConfigSupplier = topicConfigSupplier;
-        this.partitionCountSupplier = partitionCountSupplier != null
-                ? partitionCountSupplier
-                : topic -> OptionalInt.empty();
-        this.imageOffsetSupplier = imageOffsetSupplier != null ? imageOffsetSupplier : () -> 0L;
+        this.metadata = Objects.requireNonNull(metadata, "metadata must not be null");
         this.producerStateScheduler = new ScheduledThreadPoolExecutor(1, runnable -> {
             Thread thread = new Thread(runnable, "producer-state-manager");
             thread.setDaemon(true);
@@ -149,69 +123,6 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
         this.retentionTask = startRetentionChecks();
     }
 
-    UrsaStorageState(
-            Time time,
-            int brokerId,
-            UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats,
-            StreamCatalog catalog) {
-        this(time, brokerId, config, brokerTopicStats, catalog, Collections.emptyMap(), null);
-    }
-
-    UrsaStorageState(
-            Time time,
-            int brokerId,
-            UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats,
-            StreamCatalog catalog,
-            Map<String, Object> logConfigDefaults,
-            Function<String, Map<String, String>> topicConfigSupplier) {
-        this(time, brokerId, config, brokerTopicStats,
-                new LakestreamStorageHolder(
-                        Objects.requireNonNull(catalog, "catalog must not be null"), null),
-                logConfigDefaults, topicConfigSupplier);
-    }
-
-    UrsaStorageState(
-            Time time,
-            int brokerId,
-            UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats,
-            LakestreamStorageHolder lakestreamStorageHolder,
-            Map<String, Object> logConfigDefaults,
-            Function<String, Map<String, String>> topicConfigSupplier) {
-        this(time, brokerId, config, brokerTopicStats, lakestreamStorageHolder, logConfigDefaults,
-                topicConfigSupplier, topic -> OptionalInt.empty(), () -> 0L);
-    }
-
-    UrsaStorageState(
-            Time time,
-            int brokerId,
-            UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats,
-            LakestreamStorageHolder lakestreamStorageHolder,
-            Map<String, Object> logConfigDefaults,
-            Function<String, Map<String, String>> topicConfigSupplier,
-            Function<String, OptionalInt> partitionCountSupplier,
-            LongSupplier imageOffsetSupplier) {
-        this.time = Objects.requireNonNull(time, "time must not be null");
-        this.brokerId = brokerId;
-        this.config = Objects.requireNonNull(config, "config must not be null");
-        this.brokerTopicStats = Objects.requireNonNull(brokerTopicStats, "brokerTopicStats must not be null");
-        this.lakestreamStorageHolder = Objects.requireNonNull(
-                lakestreamStorageHolder, "lakestreamStorageHolder must not be null");
-        this.oxiaClientSupplier = lakestreamStorageHolder::oxiaClient;
-        this.producerStateScheduler = newDaemonScheduler("producer-state-manager-test");
-        this.disklessTimer = newDaemonScheduler("diskless-timer-test");
-        this.logConfigDefaults = logConfigDefaults != null ? logConfigDefaults : Collections.emptyMap();
-        this.topicConfigSupplier = topicConfigSupplier;
-        this.partitionCountSupplier = Objects.requireNonNull(
-                partitionCountSupplier, "partitionCountSupplier must not be null");
-        this.imageOffsetSupplier = Objects.requireNonNull(
-                imageOffsetSupplier, "imageOffsetSupplier must not be null");
-        this.retentionTask = startRetentionChecks();
-    }
-
     public Time time() {
         return time;
     }
@@ -228,17 +139,6 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     /** The scheduler behind producer-state snapshots. */
     ScheduledExecutorService producerStateScheduler() {
         return producerStateScheduler;
-    }
-
-    /**
-     * The effective {@code message.timestamp.type} of a topic. A partition writer resolves this
-     * once, when it is built, and {@link #applyTopicConfig} pushes every later change to it: the
-     * produce path must not rebuild a topic's configuration per append.
-     */
-    TimestampType timestampType(String topic) {
-        Map<String, String> topicConfig =
-                topicConfigSupplier == null ? null : topicConfigSupplier.apply(topic);
-        return timestampType(topic, topicConfig);
     }
 
     private TimestampType timestampType(String topic, Map<String, String> topicConfig) {
@@ -272,14 +172,6 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
 
     public BrokerTopicStats brokerTopicStats() {
         return brokerTopicStats;
-    }
-
-    /**
-     * Resolves a topic name to its current partition count as seen by the broker metadata cache,
-     * or empty when the cache does not know the topic.
-     */
-    public Function<String, OptionalInt> partitionCountSupplier() {
-        return partitionCountSupplier;
     }
 
     public void applyTopicConfig(String topicName, Uuid topicId, Map<String, String> topicConfig) {
@@ -353,11 +245,13 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     }
 
     private UrsaPartitionLog newPartitionLog(TopicIdPartition tp) {
+        TopicMetadata topic = topicMetadata(tp);
         return new UrsaPartitionLog(
                 tp,
                 this,
                 logMetrics,
-                openLog(tp),
+                openLog(tp, topic),
+                timestampType(topic.name(), topic.configs()),
                 oxiaClientSupplier,
                 config.getProducerStateSnapshotIntervalMs(),
                 config.getProducerStateSnapshotRecordThreshold(),
@@ -423,7 +317,7 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
         }
     }
 
-    public boolean cleanupNonOwnedProducerStates(
+    boolean cleanupNonOwnedProducerStates(
             TopicIdPartition tp,
             Set<String> ownedZones,
             boolean deletePartition) {
@@ -490,11 +384,12 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     }
 
     private RetentionConfig buildRetentionConfig(TopicIdPartition tp) {
-        Map<String, String> topicConfigs = null;
-        if (topicConfigSupplier != null) {
-            topicConfigs = topicConfigSupplier.apply(tp.topic());
-        }
-        return buildRetentionConfig(topicConfigs);
+        return buildRetentionConfig(topicMetadata(tp).configs());
+    }
+
+    private TopicMetadata topicMetadata(TopicIdPartition tp) {
+        return metadata.get().partition(tp).orElseThrow(() -> new NotLeaderOrFollowerException(
+            "Partition is no longer present in diskless metadata: " + tp));
     }
 
     private RetentionConfig buildRetentionConfig(Map<String, String> topicConfigs) {
@@ -528,9 +423,14 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
         if (closed.get()) {
             return;
         }
+        DisklessMetadataSnapshot snapshot = metadata.get();
         partitionLogs.forEach((tp, partitionLog) -> {
             try {
-                RetentionConfig retentionConfig = buildRetentionConfig(tp);
+                Optional<TopicMetadata> topic = snapshot.partition(tp);
+                if (topic.isEmpty()) {
+                    return;
+                }
+                RetentionConfig retentionConfig = buildRetentionConfig(topic.get().configs());
                 partitionLog.retention().request(
                         retentionConfig.retentionMs(), retentionConfig.retentionBytes());
             } catch (Throwable error) {
@@ -646,17 +546,8 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
      * Opens the partition with create-if-absent: the stream is created, or grown to the partition
      * count the broker metadata reports, when the catalog does not have this partition yet.
      */
-    CompletableFuture<Log> openLog(TopicIdPartition tp) {
-        Map<String, String> topicConfig =
-                topicConfigSupplier == null ? null : topicConfigSupplier.apply(tp.topic());
+    private CompletableFuture<Log> openLog(TopicIdPartition tp, TopicMetadata topic) {
         return lakestreamStorageHolder.openPartition(
-                tp,
-                partitionCountSupplier.apply(tp.topic()).orElse(tp.partition() + 1),
-                topicConfig == null ? Map.of() : topicConfig,
-                // An empty metadata image reports -1, which is not a usable source revision. A
-                // broker that has applied no metadata cannot know a diskless topic, so this clamp
-                // is defence in depth rather than a reachable case.
-                Math.max(imageOffsetSupplier.getAsLong(), 0L));
+                tp, topic.partitionCount(), topic.configs(), topic.sourceRevision());
     }
-
 }

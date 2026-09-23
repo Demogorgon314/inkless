@@ -567,7 +567,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         requestLocal = requestLocal,
         transactionSupportedOperation = transactionSupportedOperation,
         disklessRequestContext = Some(new DisklessRequestContext(
-          request.header.clientId(), Optional.empty(), request.context.listenerName.value(), config.brokerId)))
+          request.header.clientId(), request.context.listenerName.value())))
 
       // if the request is put into the purgatory, it will have a held reference and hence cannot be garbage collected;
       // hence we clear its data here in order to let GC reclaim its memory since it is already appended to log

@@ -31,11 +31,11 @@ import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.IOException;
 import java.util.Map;
-import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Function;
-import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+import io.aiven.inkless.engine.DisklessMetadataSnapshot;
 
 public class UrsaStorageEngineImpl implements DisklessStorageEngine {
 
@@ -49,18 +49,14 @@ public class UrsaStorageEngineImpl implements DisklessStorageEngine {
             UrsaStorageConfig config,
             BrokerTopicStats brokerTopicStats,
             Map<String, Object> logConfigDefaults,
-            Function<String, Map<String, String>> topicConfigSupplier,
-            Function<String, OptionalInt> partitionCountSupplier,
-            LongSupplier imageOffsetSupplier) {
+            Supplier<DisklessMetadataSnapshot> metadata) {
         this.state = new UrsaStorageState(
                 time,
                 brokerId,
                 config,
                 brokerTopicStats,
                 logConfigDefaults,
-                topicConfigSupplier,
-                partitionCountSupplier,
-                imageOffsetSupplier
+                metadata
         );
         this.writer = new UrsaLakestreamWriter(state);
         this.reader = new UrsaLakestreamReader(state);
@@ -94,14 +90,6 @@ public class UrsaStorageEngineImpl implements DisklessStorageEngine {
     @Override
     public Set<TopicIdPartition> snapshotTrackedPartitions() {
         return state.snapshotTrackedPartitions();
-    }
-
-    @Override
-    public boolean cleanupNonOwnedProducerStates(
-            TopicIdPartition tp,
-            Set<String> retainedZones,
-            boolean deleteSnapshot) {
-        return state.cleanupNonOwnedProducerStates(tp, retainedZones, deleteSnapshot);
     }
 
     @Override

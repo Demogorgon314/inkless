@@ -108,7 +108,8 @@ public class FetchOffsetHandler implements Closeable {
 
         private final CompletableFuture<Void> cancelHandler = new CompletableFuture<>();
         private final Map<TopicPartition, ListOffsetsRequestData.ListOffsetsPartition> requests = new HashMap<>();
-        private final Map<TopicPartition, CompletableFuture<OffsetResultHolder.FileRecordsOrError>> futures = new HashMap<>();
+        private final Map<TopicPartition, CompletableFuture<OffsetResultHolder.FileRecordsOrError>> unresolvedFutures = new HashMap<>();
+        private final Map<TopicIdPartition, CompletableFuture<OffsetResultHolder.FileRecordsOrError>> futures = new HashMap<>();
 
         private final Time time;
         private final InklessFetchOffsetMetrics metrics;
@@ -140,7 +141,16 @@ public class FetchOffsetHandler implements Closeable {
                                                                             final ListOffsetsRequestData.ListOffsetsPartition request) {
             requests.put(topicPartition, request);
             final CompletableFuture<OffsetResultHolder.FileRecordsOrError> result = new CompletableFuture<>();
-            futures.put(topicPartition, result);
+            unresolvedFutures.put(topicPartition, result);
+            return result;
+        }
+
+        /** Registers a result by immutable identity, even when two topic incarnations share a name. */
+        public CompletableFuture<OffsetResultHolder.FileRecordsOrError> add(final TopicIdPartition partition) {
+            final CompletableFuture<OffsetResultHolder.FileRecordsOrError> result = new CompletableFuture<>();
+            if (futures.putIfAbsent(partition, result) != null) {
+                throw new IllegalArgumentException("Duplicate offset request: " + partition);
+            }
             return result;
         }
 
@@ -161,7 +171,7 @@ public class FetchOffsetHandler implements Closeable {
                 // exception that propagates to the request handler, which may log the full request
                 // context (all topic names) producing an oversized log entry.
                 final var exception = new RuntimeException("Topic ID not found: " + e.topicName, e);
-                for (final var future : futures.values()) {
+                for (final var future : unresolvedFutures.values()) {
                     future.complete(new OffsetResultHolder.FileRecordsOrError(
                         Optional.of(exception),
                         Optional.empty()
@@ -169,6 +179,9 @@ public class FetchOffsetHandler implements Closeable {
                 }
                 return;
             }
+            requestsEnriched.keySet().forEach(partition ->
+                futures.put(partition, unresolvedFutures.get(partition.topicPartition())));
+            unresolvedFutures.clear();
             start(requestsEnriched);
         }
 
@@ -189,7 +202,7 @@ public class FetchOffsetHandler implements Closeable {
         private void queryControlPlane(final Map<TopicIdPartition, ListOffsetsRequestData.ListOffsetsPartition> requestsEnriched) {
             final List<ListOffsetsRequest> controlPlaneRequests = new ArrayList<>();
             // Partitions whose EARLIEST result came from the control plane and should be cached for future reads.
-            final Set<TopicPartition> cacheableEarliest = new HashSet<>();
+            final Set<TopicIdPartition> cacheableEarliest = new HashSet<>();
 
             for (final var entry : requestsEnriched.entrySet()) {
                 final TopicIdPartition topicIdPartition = entry.getKey();
@@ -197,10 +210,10 @@ public class FetchOffsetHandler implements Closeable {
                 if (isCrossTierEarliest(topicIdPartition, timestamp)) {
                     final Long cached = crossTierLogStartCache.get(topicIdPartition);
                     if (cached != null) {
-                        completeEarliestFromCache(topicIdPartition.topicPartition(), cached);
+                        completeEarliestFromCache(topicIdPartition, cached);
                         continue;
                     }
-                    cacheableEarliest.add(topicIdPartition.topicPartition());
+                    cacheableEarliest.add(topicIdPartition);
                 }
                 controlPlaneRequests.add(new ListOffsetsRequest(topicIdPartition, timestamp));
             }
@@ -229,7 +242,7 @@ public class FetchOffsetHandler implements Closeable {
             }
 
             for (final var response : controlPlaneResponses) {
-                final TopicPartition topicPartition = response.topicIdPartition().topicPartition();
+                final TopicIdPartition topicPartition = response.topicIdPartition();
                 final var future = futures.get(topicPartition);
                 final ApiException exception = response.errors().exception();
                 if (exception == null) {
@@ -254,7 +267,7 @@ public class FetchOffsetHandler implements Closeable {
             return timestamp == EARLIEST_TIMESTAMP && metadata.isConsolidatingDisklessTopic(topicIdPartition.topic());
         }
 
-        private void completeEarliestFromCache(final TopicPartition topicPartition, final long offset) {
+        private void completeEarliestFromCache(final TopicIdPartition topicPartition, final long offset) {
             futures.get(topicPartition).complete(new OffsetResultHolder.FileRecordsOrError(
                 Optional.empty(),
                 Optional.of(new FileRecords.TimestampAndOffset(RecordBatch.NO_TIMESTAMP, offset, Optional.of(LeaderAndIsr.INITIAL_LEADER_EPOCH)))

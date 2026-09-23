@@ -16,6 +16,8 @@
  */
 package kafka.server;
 
+import kafka.server.metadata.KafkaDisklessMetadataSnapshot;
+
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.NewPartitions;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -23,12 +25,15 @@ import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.test.KafkaClusterTestKit;
 import org.apache.kafka.common.test.TestKitNodes;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.config.ServerConfigs;
 import org.apache.kafka.test.TestUtils;
 
@@ -43,6 +48,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessEngineContractAssertions;
 import io.aiven.inkless.engine.DisklessEngines;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
 import io.aiven.inkless.test_utils.MinioContainer;
@@ -144,6 +151,15 @@ public class UrsaEngineIntegrationTest {
                     var oldId = admin.describeTopics(List.of(DISKLESS)).allTopicNames()
                         .get(30, TimeUnit.SECONDS).get(DISKLESS).topicId();
                     var providerConfig = cluster.controllers().values().iterator().next().config().originals();
+                    var broker = cluster.brokers().values().iterator().next();
+                    var context = new DisklessEngine.Context(Time.SYSTEM, broker.config().brokerId(),
+                        broker.brokerTopicStats(), broker.config().extractLogConfigMap(),
+                        () -> new KafkaDisklessMetadataSnapshot(broker.metadataCache().currentImage()));
+                    try (var engine = DisklessEngines.loadBroker(providerConfig, context)) {
+                        DisklessEngineContractAssertions.assertOffsetBatch(engine,
+                            new TopicIdPartition(oldId, partition),
+                            new TopicIdPartition(Uuid.randomUuid(), partition), 21L);
+                    }
                     try (var inspection = DisklessEngines.loadLifecycle(providerConfig)) {
                         var lifecycle = (DisklessTopicLifecycle.MetadataDriven) inspection;
                         TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)

@@ -16,14 +16,9 @@
  */
 package io.aiven.inkless.engine;
 
-import java.util.Optional;
-
-/**
- * Immutable client identity supplied by Kafka. A missing rack is unknown, not the broker's rack.
- * Plugins must not change durable producer identity based on the broker serving the request.
- */
-public record DisklessRequestContext(String clientId, Optional<String> clientRack, String listenerName, int brokerId) {
-    public static DisklessRequestContext internal(int brokerId) {
-        return new DisklessRequestContext("", Optional.empty(), "", brokerId);
+/** Immutable request origin. Broker identity belongs to the engine's construction context. */
+public record DisklessRequestContext(String clientId, String listenerName) {
+    public static DisklessRequestContext internal() {
+        return new DisklessRequestContext("", "");
     }
 }

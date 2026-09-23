@@ -35,27 +35,33 @@ import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Function;
-import java.util.function.LongSupplier;
-import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Experimental broker data-plane boundary. The engine owns record validation, offsets,
  * producer state, and persistence; Kafka owns authorization and classic/diskless routing.
  * This interface is not a complete storage-provider or stable public API.
+ *
+ * <p>Batch operations complete normally with one non-null result per requested partition, including
+ * partition failures. They never omit failed partitions. An exceptional future means the batch
+ * failed without a complete result map; it does not imply that no records were committed.
+ *
+ * <p>Kafka owns request deadlines. Cancellation stops waiting and may request backend cancellation;
+ * an append can still commit after its caller stops waiting. Implementations must not retain
+ * RequestLocal for asynchronous use, or reuse record buffers while Kafka is reading a response.
+ *
+ * <p>Kafka stops request handlers and the broker scheduler before close. The engine must settle
+ * its own background work before releasing resources. Close is idempotent; it is not a per-request
+ * cancellation API.
+ * Borrowed capabilities share the engine lifetime; callers do not close them independently
+ * and must not use them after engine close.
+ * Callbacks may run on completion threads, so neither side may assume a request-handler thread.
  */
 public interface DisklessEngine extends Closeable {
-    /**
-     * Kafka-owned broker services. isCurrentPartition checks ID, name, partition, and diskless mode
-     * in one metadata snapshot; it does not express broker or zone ownership.
-     */
+    /** Kafka-owned services; metadata.get() captures one image for a request or maintenance pass. */
     record Context(Time time, int brokerId, BrokerTopicStats metrics,
-                   Map<String, Object> logDefaults,
-                   Function<String, Map<String, String>> topicConfig,
-                   Function<String, OptionalInt> partitionCount, LongSupplier metadataRevision,
-                   Predicate<TopicIdPartition> isCurrentPartition) {
+                   Map<String, Object> logDefaults, Supplier<DisklessMetadataSnapshot> metadata) {
     }
 
     /** Fences deleted topic incarnations before the broker retires their partition handles. */

@@ -198,7 +198,7 @@ public final class InklessDisklessEngine implements DisklessEngine {
             var request = new ListOffsetsPartition().setPartitionIndex(partition.partition())
                 .setTimestamp(spec.timestamp()).setCurrentLeaderEpoch(spec.currentLeaderEpoch().orElse(-1));
             nativeRequests.put(partition, request);
-            results.put(partition, job.add(partition.topicPartition(), request).thenApply(result -> {
+            results.put(partition, job.add(partition).thenApply(result -> {
                 if (result.exception().isPresent()) {
                     return new ListOffsetsResult(Errors.forException(result.exception().get()), -1L, -1L, Optional.empty());
                 }

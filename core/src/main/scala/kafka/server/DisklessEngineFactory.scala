@@ -19,16 +19,12 @@ package kafka.server
 import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.control_plane.ControlPlane
 import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessTopicLifecycle, InklessDisklessEngine, InklessTopicLifecycle}
-import kafka.server.metadata.InklessMetadataView
-import org.apache.kafka.common.config.{ConfigResource, TopicConfig}
+import kafka.server.metadata.{InklessMetadataView, KafkaDisklessMetadataSnapshot}
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.metadata.KRaftMetadataCache
 import org.apache.kafka.storage.internals.log.LogConfig
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats
 
-import java.lang.{Boolean => JBoolean}
-import java.util.OptionalInt
-import scala.jdk.CollectionConverters._
 import scala.jdk.OptionConverters._
 
 /** Assembles provider-specific resources once; request handlers only receive the engine. */
@@ -73,16 +69,7 @@ object DisklessEngineFactory {
     if (!config.disklessStorageSystemEnabled) return None
     if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       val context = new DisklessEngine.Context(time, config.brokerId, metrics, config.extractLogConfigMap,
-        topic => metadata.getTopicConfig(topic).originals.asScala.map { case (k, v) => k -> v.toString }.asJava,
-        topic => metadataCache.numPartitions(topic).map(n => OptionalInt.of(n)).orElse(OptionalInt.empty()),
-        () => metadataCache.currentImage().highestOffsetAndEpoch().offset(),
-        partition => {
-          val image = metadataCache.currentImage()
-          val topic = image.topics().getTopic(partition.topicId())
-          topic != null && topic.name() == partition.topic() && topic.partitions().containsKey(partition.partition()) &&
-            JBoolean.parseBoolean(image.configs().configProperties(
-              new ConfigResource(ConfigResource.Type.TOPIC, topic.name())).getProperty(TopicConfig.DISKLESS_ENABLE_CONFIG))
-        })
+        () => new KafkaDisklessMetadataSnapshot(metadataCache.currentImage()))
       Some(DisklessEngines.loadBroker(config.originals, context))
     } else {
       controlPlane.map { cp =>

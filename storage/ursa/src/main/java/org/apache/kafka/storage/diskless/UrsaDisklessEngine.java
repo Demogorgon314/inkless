@@ -37,9 +37,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
-import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessMetadataSnapshot;
 import io.aiven.inkless.engine.DisklessRequestContext;
 
 /** Bridges the broker SPI to the storage implementation copied from UFK. */
@@ -47,15 +48,14 @@ public final class UrsaDisklessEngine implements DisklessEngine {
     private static final Logger LOG = LoggerFactory.getLogger(UrsaDisklessEngine.class);
     private static final long RECONCILE_INTERVAL_MS = 30_000L;
     private final DisklessStorageEngine storage;
-    private final Predicate<TopicIdPartition> isCurrentPartition;
+    private final Supplier<DisklessMetadataSnapshot> metadata;
     private ScheduledFuture<?> maintenance;
     private boolean closed;
 
     public UrsaDisklessEngine(UrsaStorageConfig config, Context context) {
-        this.isCurrentPartition = context.isCurrentPartition();
+        this.metadata = context.metadata();
         storage = new UrsaStorageEngineImpl(context.time(), context.brokerId(), config,
-            context.metrics(), context.logDefaults(), context.topicConfig(),
-            context.partitionCount(), context.metadataRevision());
+            context.metrics(), context.logDefaults(), context.metadata());
     }
 
     @Override
@@ -73,9 +73,10 @@ public final class UrsaDisklessEngine implements DisklessEngine {
         ClassLoader original = thread.getContextClassLoader();
         thread.setContextClassLoader(getClass().getClassLoader());
         try {
+            var snapshot = metadata.get();
             for (var partition : storage.snapshotTrackedPartitions()) {
                 try {
-                    if (!isCurrentPartition.test(partition)) {
+                    if (snapshot.partition(partition).isEmpty()) {
                         // Only retire local handles. The controller owns durable deletion and its fencing.
                         storage.cleanupPartition(partition, false);
                     }

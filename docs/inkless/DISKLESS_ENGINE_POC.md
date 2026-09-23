@@ -86,11 +86,18 @@ consolidation semantics.
 and cross-tier offset decisions. These broker responsibilities apply regardless
 of the selected storage engine.
 
-`DisklessEngine.Context` supplies Kafka-owned services and metadata lookups.
+`DisklessEngine.Context` supplies Kafka-owned services, broker identity, and a
+supplier of immutable metadata snapshots. Each snapshot resolves diskless topics
+by UUID and reads partition count, raw topic overrides, and source revision from
+one Kafka metadata image. Broker defaults remain separate. Ursa uses one topic
+snapshot to open a partition and initialize its writer; retention and handle
+reconciliation also resolve by UUID. A same-name replacement cannot supply the
+old partition's configuration. A snapshot does not fence subsequent metadata
+changes; the existing storage deletion fence still protects deleted identities.
+
 The Ursa adapter translates append, fetch, and offset lookup and invokes the
 copied UFK implementation. Append receives an immutable `DisklessRequestContext`
-with client ID, listener, and broker ID. Produce has no rack field; the broker
-leaves the optional client rack empty. Producer state retains UFK's stable
+with client ID and listener. Producer state retains UFK's stable
 `no-zone` namespace: client routing hints alone do not establish zone ownership.
 Adding zone-based producer identity requires coordinated routing and owner reconciliation.
 
@@ -98,7 +105,10 @@ Kafka's `DisklessOffsetJob` owns batching, cancellation, and purgatory conversio
 It resolves immutable topic IDs before dispatching a batch to `listOffsets`.
 The engine returns typed results without Kafka's private `FileRecordsOrError`.
 Cancellation stops waiting and attempts to cancel backend work; it does not promise
-that the backend has stopped.
+that the backend has stopped. Normal batch completion includes every requested
+partition, including failures; an exceptional append does not prove that nothing
+was committed. Engines own asynchronous buffers and cannot retain `RequestLocal`
+for use on background threads.
 
 Optional deletion, readiness probing, and tiered-storage services use
 `Optional<Capability>` consistently. `TieredStorage` is a separate extension
@@ -236,7 +246,8 @@ The source baseline is UFK commit `706699788b`; the Inkless baseline is
   provider-local copies of UFK's configuration defaults instead of adding Ursa
   keys to Kafka's server config class.
 - `UrsaStorageState` is final to satisfy this checkout's constructor-escape
-  compiler check. Its storage algorithms are unchanged.
+  compiler check. Metadata access now uses the engine's UUID-aware snapshots;
+  partition opening and writer initialization share the same topic configuration.
 - The generic lifecycle contract, reconciler, and reconciler tests come from
   UFK. Their imports and topic-enable key are adapted to Inkless.
 - The loader utilities come from UFK, with stricter private dependency isolation,
@@ -269,7 +280,10 @@ metadata-publisher, and delayed-fetch tests cover the affected broker behavior.
 The copied lifecycle tests cover retry, ordering, leadership loss, and sweeps.
 Consolidation and migration tests cover the native tiered-storage adapter.
 Engine tests cover task cancellation and resource closure after a handler fails;
-broker tests cover exceptional plugin deletion results.
+broker tests cover exceptional plugin deletion results. Shared offset assertions
+exercise partial success and empty batches against both native and isolated Ursa
+engines. Snapshot tests cover metadata changes and same-name recreation. A proxy
+contract test discovers optional capabilities and verifies their classloader context.
 This is targeted validation, not the full Kafka test suite or a performance
 benchmark.
 
@@ -284,6 +298,6 @@ fetch boundaries demonstrated here.
 and [KIP-1164](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/350783984/KIP-1164+Diskless+Coordinator)
 still require a broader agreement on replicas, transactions, and compatibility.
 This PoC does not establish those semantics for external engines. The public
-SPI now uses topic-ID-aware offset requests/results. Metadata configuration
-suppliers inside the copied UFK implementation still look up names; replacing
-those with incarnation-aware snapshots remains follow-up work.
+SPI now uses topic-ID-aware offset requests/results and immutable metadata snapshots.
+The native offset handler also associates results by UUID, so distinct incarnations
+of the same topic cannot overwrite each other's pending results.

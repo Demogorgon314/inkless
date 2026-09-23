@@ -4824,7 +4824,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(errorResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(errorResult))
     doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
@@ -4901,7 +4901,7 @@ class ReplicaManagerInklessTest {
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(101L, partitionResult.endOffset())
-      verify(jobMock, never()).add(any(), any())
+      verify(jobMock, never()).add(any[TopicIdPartition]())
       verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -4945,7 +4945,7 @@ class ReplicaManagerInklessTest {
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(101L, partitionResult.endOffset())
-      verify(jobMock, never()).add(any(), any())
+      verify(jobMock, never()).add(any[TopicIdPartition]())
       verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5001,7 +5001,7 @@ class ReplicaManagerInklessTest {
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(101L, partitionResult.endOffset())
-      verify(jobMock, never()).add(any(), any())
+      verify(jobMock, never()).add(any[TopicIdPartition]())
       verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5056,7 +5056,7 @@ class ReplicaManagerInklessTest {
 
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NOT_LEADER_OR_FOLLOWER.code, partitionResult.errorCode())
-      verify(jobMock, never()).add(any(), any())
+      verify(jobMock, never()).add(any[TopicIdPartition]())
       verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5070,7 +5070,7 @@ class ReplicaManagerInklessTest {
       Optional.of(new FileRecords.TimestampAndOffset(RecordBatch.NO_TIMESTAMP, 200L, Optional.of[Integer](0))))
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(disklessResult))
     doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
@@ -5104,7 +5104,7 @@ class ReplicaManagerInklessTest {
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(200L, partitionResult.endOffset())
-      verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+      verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
       verify(jobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5117,7 +5117,7 @@ class ReplicaManagerInklessTest {
       Optional.empty(),
       Optional.of(new FileRecords.TimestampAndOffset(RecordBatch.NO_TIMESTAMP, 200L, Optional.of[Integer](1))))
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(disklessResult))
     doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
@@ -5151,7 +5151,7 @@ class ReplicaManagerInklessTest {
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(200L, partitionResult.endOffset())
-      verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+      verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
       verify(jobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5253,7 +5253,7 @@ class ReplicaManagerInklessTest {
       assertEquals(OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH_OFFSET, partitionResult.endOffset())
       assertEquals(OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH, partitionResult.leaderEpoch())
       verify(fetchOffsetHandlerMock, never()).createJob()
-      verify(jobMock, never()).add(any(), any())
+      verify(jobMock, never()).add(any[TopicIdPartition]())
       verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5267,7 +5267,7 @@ class ReplicaManagerInklessTest {
     doNothing().when(jobMock).start(any())
 
     val taskFuture = new CompletableFuture[OffsetResultHolder.FileRecordsOrError]()
-    when(jobMock.add(any[TopicPartition], any[ListOffsetsPartition])).thenReturn(taskFuture)
+    when(jobMock.add(any[TopicIdPartition])).thenReturn(taskFuture)
     when(jobMock.cancelHandler()).thenReturn(CompletableFuture.completedFuture(null))
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
@@ -5315,7 +5315,7 @@ class ReplicaManagerInklessTest {
     assertEquals(Errors.NONE.code, partitionResponse.errorCode())
     assertEquals(200L, partitionResponse.offset())
 
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(replicaManager, never()).fetchOffsetForTimestamp(any(), anyLong(), any(), any(), anyBoolean())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5371,7 +5371,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5385,7 +5385,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(successResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(successResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -5425,7 +5425,7 @@ class ReplicaManagerInklessTest {
     assertEquals(Errors.NONE.code, partitionResponse.errorCode())
     assertEquals(200L, partitionResponse.offset())
 
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(replicaManager, never()).fetchOffsetForTimestamp(any(), anyLong(), any(), any(), anyBoolean())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5481,7 +5481,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5495,7 +5495,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(successResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(successResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -5535,7 +5535,7 @@ class ReplicaManagerInklessTest {
     assertEquals(Errors.NONE.code, partitionResponse.errorCode())
     assertEquals(0L, partitionResponse.offset())
 
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(replicaManager, never()).fetchOffsetForTimestamp(any(), anyLong(), any(), any(), anyBoolean())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5550,7 +5550,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(successResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(successResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -5590,7 +5590,7 @@ class ReplicaManagerInklessTest {
     assertEquals(Errors.NONE.code, partitionResponse.errorCode())
     assertEquals(0L, partitionResponse.offset())
 
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(replicaManager, never()).fetchOffsetForTimestamp(any(), anyLong(), any(), any(), anyBoolean())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -5654,7 +5654,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5709,7 +5709,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5764,7 +5764,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5820,7 +5820,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5834,7 +5834,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -5882,7 +5882,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5937,7 +5937,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock, never()).add(any(), any())
+    verify(jobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5966,7 +5966,7 @@ class ReplicaManagerInklessTest {
 
     val batchJobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(batchJobMock.mustHandle(any())).thenReturn(true)
-    when(batchJobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
+    when(batchJobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(batchJobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(batchJobMock).start(any())
 
@@ -6018,7 +6018,7 @@ class ReplicaManagerInklessTest {
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
     // The diskless fallback was batched into the per-request job rather than into a fresh one;
     // exactly one job (the outer batch) was created and started exactly once.
-    verify(batchJobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(batchJobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(batchJobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -6043,7 +6043,7 @@ class ReplicaManagerInklessTest {
 
     // Fallback job created on demand once the async classic future completes empty.
     val fallbackJobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
-    when(fallbackJobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
+    when(fallbackJobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(fallbackJobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(fallbackJobMock).start(any())
 
@@ -6088,7 +6088,7 @@ class ReplicaManagerInklessTest {
     // Classic future hasn't completed yet → response is parked in the purgatory and the
     // fallback hasn't fired. The empty outer broker batch sends no request to the engine.
     assertNull(responseTopics)
-    verify(fallbackJobMock, never()).add(any(), any())
+    verify(fallbackJobMock, never()).add(any[TopicIdPartition]())
     verify(fallbackJobMock, never()).start(any())
 
     // Now complete the classic remote future as empty. This drives the fallback chain
@@ -6108,7 +6108,7 @@ class ReplicaManagerInklessTest {
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
     // The diskless fallback was issued on a fresh job created on demand.
-    verify(fallbackJobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(fallbackJobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(fallbackJobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
@@ -6178,7 +6178,7 @@ class ReplicaManagerInklessTest {
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
     // No diskless fallback should fire when classic remote answered authoritatively.
-    verify(batchJobMock, never()).add(any(), any())
+    verify(batchJobMock, never()).add(any[TopicIdPartition]())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -6193,7 +6193,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -6243,7 +6243,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -6260,7 +6260,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -6318,7 +6318,7 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -6337,7 +6337,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -6407,7 +6407,7 @@ class ReplicaManagerInklessTest {
 
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
+    when(jobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(jobMock).start(any())
 
@@ -6482,7 +6482,7 @@ class ReplicaManagerInklessTest {
 
     val batchJobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(batchJobMock.mustHandle(any())).thenReturn(true)
-    when(batchJobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
+    when(batchJobMock.add(any[TopicIdPartition]())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(batchJobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     doNothing().when(batchJobMock).start(any())
 
@@ -6536,7 +6536,7 @@ class ReplicaManagerInklessTest {
     // clamped classic remote hit (offset 100 / timestamp 123).
     assertEquals(200L, partitionResponse.offset())
     assertEquals(456L, partitionResponse.timestamp())
-    verify(batchJobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
+    verify(batchJobMock).add(ArgumentMatchers.eq(disklessTopicPartition))
     verify(batchJobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)

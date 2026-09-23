@@ -265,6 +265,9 @@ class ReplicaManager(val config: KafkaConfig,
   private val recordDeleter = disklessEngine.flatMap(_.recordDeleter().toScala)
   private val fetchProber = disklessEngine.flatMap(_.fetchProber().toScala)
   private val tieredStorage = disklessEngine.flatMap(_.tieredStorage().toScala)
+  private def newDisklessOffsetJob(engine: DisklessEngine): DisklessOffsetJob =
+    new DisklessOffsetJob(engine, _inklessMetadataView)
+
   private val disklessFetchOffsetRouter = new DisklessFetchOffsetRouter(
     _inklessMetadataView,
     config.disklessManagedReplicasEnabled,
@@ -305,7 +308,7 @@ class ReplicaManager(val config: KafkaConfig,
             this,
             quotaMgr,
             fetchHandler,
-            () => new DisklessOffsetJob(engine, _inklessMetadataView),
+            () => newDisklessOffsetJob(engine),
             consolidationMetrics
           )
         }
@@ -857,7 +860,7 @@ class ReplicaManager(val config: KafkaConfig,
 
     val disklessResponsesFuture = disklessEngine match {
       case Some(engine) => engine.append(readyDisklessEntries.asJava, requestLocal,
-        disklessRequestContext.getOrElse(DisklessRequestContext.internal(config.brokerId)))
+        disklessRequestContext.getOrElse(DisklessRequestContext.internal()))
       case _ =>
         if (disklessEntries.nonEmpty)
           error(s"Received diskless entries to append for topics ${disklessEntries.keys.map(_.topic()).mkString(", ")} but diskless storage system is not enabled. " +
@@ -2040,7 +2043,7 @@ class ReplicaManager(val config: KafkaConfig,
                   buildErrorResponse: (Errors, ListOffsetsPartition) => ListOffsetsPartitionResponse,
                   responseCallback: Consumer[util.Collection[ListOffsetsTopicResponse]],
                   timeoutMs: Int = 0): Unit = {
-    val maybeFetchOffsetJob = disklessEngine.map(engine => new DisklessOffsetJob(engine, _inklessMetadataView))
+    val maybeFetchOffsetJob = disklessEngine.map(engine => newDisklessOffsetJob(engine))
     val statusByPartition = mutable.Map[TopicPartition, ListOffsetsPartitionStatus]()
 
     val classicFetch: (TopicPartition, ListOffsetsPartition, Boolean) => ListOffsetsPartitionStatus =
@@ -2064,7 +2067,7 @@ class ReplicaManager(val config: KafkaConfig,
             ListOffsetsPartitionStatus.builder().responseOpt(Optional.of(buildErrorResponse(Errors.UNSUPPORTED_VERSION, partition))).build()
         } else if (maybeFetchOffsetJob.isDefined && _inklessMetadataView.isDisklessTopic(topic.name)) {
           statusByPartition += topicPartition ->
-            disklessFetchOffsetRouter.route(maybeFetchOffsetJob.get, () => new DisklessOffsetJob(disklessEngine.get, _inklessMetadataView),
+            disklessFetchOffsetRouter.route(maybeFetchOffsetJob.get, () => newDisklessOffsetJob(disklessEngine.get),
               topicPartition, partition, replicaId, version, classicLogStart, hasCompleteClassicPrefix, classicFetch)
         } else {
           statusByPartition += topicPartition -> classicFetch(topicPartition, partition, false)
@@ -3502,7 +3505,7 @@ class ReplicaManager(val config: KafkaConfig,
   def lastOffsetForLeaderEpoch(
     requestedEpochInfo: Seq[OffsetForLeaderTopic]
   ): Seq[OffsetForLeaderTopicResult] = {
-    lazy val disklessOffsetJob = disklessEngine.map(engine => new DisklessOffsetJob(engine, _inklessMetadataView))
+    lazy val disklessOffsetJob = disklessEngine.map(engine => newDisklessOffsetJob(engine))
     var disklessOffsetForLeaderEpochRequested = false
 
     def localOffsetForLeaderEpoch(
