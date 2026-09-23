@@ -112,6 +112,11 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
+    public DisklessTopicLifecycle topicLifecycle() {
+        return new InklessTopicLifecycle(sharedState.controlPlane());
+    }
+
+    @Override
     public boolean supportsDeleteRecords() {
         return true;
     }

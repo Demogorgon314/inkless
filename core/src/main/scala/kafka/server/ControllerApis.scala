@@ -17,7 +17,8 @@
 
 package kafka.server
 
-import io.aiven.inkless.control_plane.{ControlPlane, CreateTopicAndPartitionsRequest}
+import io.aiven.inkless.engine.DisklessTopicLifecycle
+import io.aiven.inkless.engine.DisklessTopicLifecycle.{ExecutionMode, PartitionRange}
 
 import java.{lang, util}
 import java.nio.ByteBuffer
@@ -82,8 +83,10 @@ class ControllerApis(
   val registrationsPublisher: ControllerRegistrationsPublisher,
   val apiVersionManager: ApiVersionManager,
   val metadataCache: KRaftMetadataCache,
-  val inklessControlPlane: Option[ControlPlane] = None
+  val disklessTopicLifecycle: Option[DisklessTopicLifecycle] = None
 ) extends ApiRequestHandler with Logging {
+
+  private val requestLifecycle = disklessTopicLifecycle.filter(_.executionMode() == ExecutionMode.REQUEST_DRIVEN)
 
   this.logIdent = s"[ControllerApis nodeId=${config.nodeId}] "
   val authHelper = new AuthHelper(authorizerPlugin)
@@ -354,24 +357,26 @@ class ControllerApis(
           }
         }
 
-        // Deletes topics from the Inkless control plane before removing them from the Kafka quorum metadata.
-        // This ordering is crucial because the disappearance of the topics from the quorum metadata
-        // signals successful topic removal and is where retry attempts for this entire operation cease.
-        // If errors occur, the diskless removal is retried, ensuring that the diskless side is in sync
-        // with Kafka. The diskless deletion is idempotent (provided topics with the same names aren't created in between).
-        val topicIdsToDeleteFromControlPlane = idToName.asScala
+        // Request-driven providers must finish storage deletion while the Kafka topic still exists,
+        // so a failure remains retryable. Metadata-driven providers handle committed deletion in
+        // the reconciler and do not perform storage work on this request path.
+        val disklessTopicIds = idToName.asScala
           .filter { case (_, name) => inklessMetadataView.isDisklessTopic(name) }
           .map { case (topicId, _) => topicId }
           .toSet.asJava
-        if (!config.disklessStorageSystemEnabled && !topicIdsToDeleteFromControlPlane.isEmpty)
-          warn(s"Attempting to delete diskless topics $topicIdsToDeleteFromControlPlane " +
-            "from the control plane, but the diskless storage system is not enabled. " +
-            "Topic will only be removed from KRaft metadata as no control plane is available.")
-        inklessControlPlane.foreach { cp => cp.deleteTopics(topicIdsToDeleteFromControlPlane) }
+        if (!config.disklessStorageSystemEnabled && !disklessTopicIds.isEmpty)
+          warn(s"Attempting to delete diskless topics $disklessTopicIds " +
+            "from storage, but the diskless storage system is not enabled. " +
+            "Topic will only be removed from KRaft metadata as no lifecycle service is available.")
+        val storageDeletion = requestLifecycle.map { lifecycle =>
+          CompletableFuture.allOf(disklessTopicIds.asScala.map { id =>
+            lifecycle.deleteTopic(idToName.get(id), id)
+          }.toSeq: _*)
+        }.getOrElse(CompletableFuture.completedFuture(null))
 
         // Finally, the idToName map contains all the topics that we are authorized to delete.
         // Perform the deletion and create responses for each one.
-        controller.deleteTopics(context, idToName.keySet).thenApply { idToError =>
+        storageDeletion.thenCompose(_ => controller.deleteTopics(context, idToName.keySet).thenApply { idToError =>
           idToError.forEach { (id, error) =>
             appendResponse(idToName.get(id), id, error)
           }
@@ -379,7 +384,7 @@ class ControllerApis(
           // distinguish between absent topics and topics we are not permitted to see.
           Collections.shuffle(responses)
           responses
-        }
+        })
       }
     }
   }
@@ -447,7 +452,7 @@ class ControllerApis(
         iterator.remove()
       }
     }
-    controller.createTopics(context, effectiveRequest, describableTopicNames).thenApply { response =>
+    controller.createTopics(context, effectiveRequest, describableTopicNames).thenCompose { response =>
       duplicateTopicNames.forEach { name =>
         response.topics().add(new CreatableTopicResult().
           setName(name).
@@ -468,14 +473,13 @@ class ControllerApis(
         }
       }
 
-      createTopicsDiskless(response)
-
-      response
+      if (request.validateOnly) CompletableFuture.completedFuture(response)
+      else createTopicsDiskless(response).thenApply(_ => response)
     }
   }
 
-  private def createTopicsDiskless(response: CreateTopicsResponseData): Unit = {
-    inklessControlPlane.foreach { cp =>
+  private def createTopicsDiskless(response: CreateTopicsResponseData): CompletableFuture[Void] = {
+    requestLifecycle.map { lifecycle =>
       val successfullyCreatedTopics = response.topics.asScala
         // Include only diskless topics
         .filter(t =>
@@ -505,12 +509,14 @@ class ControllerApis(
         throw new UnknownServerException("Could not find newly created topic metadata")
       }
 
-      val createTopicRequests = successfullyCreatedTopics
+      val operations = successfullyCreatedTopics
         .filter(t => inklessMetadataView.isDisklessTopic(t.name()))
-        .map(t => new CreateTopicAndPartitionsRequest(t.topicId(), t.name(), t.numPartitions()))
-        .toSet.asJava
-      cp.createTopicAndPartitions(createTopicRequests)
-    }
+        .map(t => lifecycle.ensureTopic(t.name(), t.topicId(), t.numPartitions(),
+          inklessMetadataView.getTopicConfig(t.name()).originals.asScala
+            .map { case (key, value) => key -> value.toString }.asJava,
+          metadataCache.currentImage().highestOffsetAndEpoch().offset()))
+      CompletableFuture.allOf(operations.toSeq: _*)
+    }.getOrElse(CompletableFuture.completedFuture(null))
   }
 
   def handleApiVersionsRequest(request: RequestChannel.Request): CompletableFuture[Unit] = {
@@ -953,7 +959,7 @@ class ControllerApis(
       }
     }
     val priorTopicStates =
-      if (request.validateOnly || inklessControlPlane.isEmpty) Map.empty[String, TopicState]
+      if (request.validateOnly || requestLifecycle.isEmpty) Map.empty[String, TopicState]
       else topicStatesBeforeIncrease(topics)
 
     controller.createPartitions(context, topics, request.validateOnly).thenCompose { results =>
@@ -979,13 +985,13 @@ class ControllerApis(
                                       topics: java.util.List[CreatePartitionsTopic],
                                       results: java.util.List[CreatePartitionsTopicResult],
                                       priorTopicStates: Map[String, TopicState]): CompletableFuture[Unit] = {
-    inklessControlPlane match {
+    requestLifecycle match {
       case _ if validateOnly =>
         CompletableFuture.completedFuture(())
       case None =>
         CompletableFuture.completedFuture(())
 
-      case Some(cp) =>
+      case Some(lifecycle) =>
         val eligibleRequests = (topics.asScala zip results.asScala)
           // NONE is the first increase. INVALID_PARTITIONS is a retry after KRaft already applied,
           // except a decrease, which uses the same error code and must not write.
@@ -998,7 +1004,7 @@ class ControllerApis(
           // Hence, the topics themselves must be in the metadata already, no need to wait.
           .filter { case (req, _) => inklessMetadataView.isDisklessTopic(req.name()) }
         val topicNames = eligibleRequests.map(_._1.name()).distinct.toList.asJava
-        controller.findTopicIds(context, topicNames).thenApply { topicIds =>
+        controller.findTopicIds(context, topicNames).thenCompose { topicIds =>
           val createPartitionRequests = eligibleRequests.flatMap { case (req, res) =>
             val topicName = req.name()
             val topicIdOrError = topicIds.get(topicName)
@@ -1013,7 +1019,9 @@ class ControllerApis(
             }
           }.toSet
           if (createPartitionRequests.nonEmpty) {
-            cp.createTopicAndPartitions(createPartitionRequests.asJava)
+            lifecycle.ensurePartitions(createPartitionRequests.asJava).thenApply(_ => ())
+          } else {
+            CompletableFuture.completedFuture(())
           }
         }
     }
@@ -1033,7 +1041,7 @@ class ControllerApis(
     count: Int,
     errorCode: Short,
     priorTopicStates: Map[String, TopicState]
-  ): Seq[CreateTopicAndPartitionsRequest] = {
+  ): Seq[PartitionRange] = {
     val retry = errorCode != Errors.NONE.code()
     val imagePartitions = Option(metadataCache.currentImage().topics().getTopic(topicId))
       .map(_.partitions())
@@ -1049,7 +1057,7 @@ class ControllerApis(
         }
       val partitions = bornDisklessPartitions(imagePartitions, count).filter(_ >= firstPartition)
       contiguousRanges(partitions).map { case (from, until) =>
-        new CreateTopicAndPartitionsRequest(topicId, topicName, from, until)
+        new PartitionRange(topicId, topicName, from, until)
       }
     }
   }

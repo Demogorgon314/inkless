@@ -99,6 +99,11 @@ public final class UrsaDisklessTopicLifecycle implements DisklessTopicLifecycle 
     }
 
     @Override
+    public ExecutionMode executionMode() {
+        return ExecutionMode.METADATA_DRIVEN;
+    }
+
+    @Override
     public CompletableFuture<List<ManagedTopic>> listManagedTopics() {
         return catalog.listStreamEntries(KafkaStreamIdentity.NAMESPACE)
                 .thenApply(entries -> entries.stream()

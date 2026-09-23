@@ -22,7 +22,8 @@ import kafka.raft.KafkaRaftManager
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.metadata.{ClientQuotaMetadataManager, DynamicConfigPublisher, KRaftMetadataCachePublisher}
 import kafka.server.metadata.DisklessTopicLifecycleReconciler
-import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines}
+import io.aiven.inkless.engine.DisklessTopicLifecycle.ExecutionMode
+import kafka.server.DisklessEngineFactory.ControllerStorage
 
 import scala.collection.immutable
 import kafka.utils.Logging
@@ -106,7 +107,7 @@ class ControllerServer(
   var controllerApisHandlerPool: KafkaRequestHandlerPool = _
   def kafkaYammerMetrics: KafkaYammerMetrics = KafkaYammerMetrics.INSTANCE
   val metadataPublishers: util.List[MetadataPublisher] = new util.ArrayList[MetadataPublisher]()
-  private var disklessLifecycleEngine: Option[DisklessEngine] = None
+  private var disklessControllerStorage: Option[ControllerStorage] = None
   @volatile var metadataCache : KRaftMetadataCache = _
   @volatile var metadataCachePublisher: KRaftMetadataCachePublisher = _
   @volatile var featuresPublisher: FeaturesPublisher = _
@@ -289,6 +290,7 @@ class ControllerServer(
         time,
         s"controller-${config.nodeId}-", ProcessRole.ControllerRole.toString)
       clientQuotaMetadataManager = new ClientQuotaMetadataManager(quotaManagers, socketServer.connectionQuotas)
+      disklessControllerStorage = DisklessEngineFactory.createControllerStorage(config, sharedServer.inklessControlPlane)
       controllerApis = new ControllerApis(socketServer.dataPlaneRequestChannel,
         authorizerPlugin,
         quotaManagers,
@@ -300,7 +302,7 @@ class ControllerServer(
         registrationsPublisher,
         apiVersionManager,
         metadataCache,
-        sharedServer.inklessControlPlane)
+        disklessControllerStorage.map(_.lifecycle))
       controllerApisHandlerPool = sharedServer.requestHandlerPoolFactory.createPool(
         config.nodeId,
         socketServer.dataPlaneRequestChannel,
@@ -343,15 +345,13 @@ class ControllerServer(
         ),
         "controller"))
 
-      if (config.disklessStorageSystemEnabled && config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
-        val engine = DisklessEngines.load(config.originals, () =>
-          throw new IllegalStateException("Missing diskless engine class"))
-        disklessLifecycleEngine = Some(engine)
-        metadataPublishers.add(new DisklessTopicLifecycleReconciler(config.nodeId, engine.topicLifecycle(),
-          // Backend failures are retried by the reconciler; they are not metadata replay failures.
-          (message: String, cause: Throwable) => warn(message, cause),
-          600000L))
-      }
+      disklessControllerStorage.map(_.lifecycle)
+        .filter(_.executionMode() == ExecutionMode.METADATA_DRIVEN).foreach { lifecycle =>
+          metadataPublishers.add(new DisklessTopicLifecycleReconciler(config.nodeId, lifecycle,
+            // Backend failures are retried by the reconciler; they are not metadata replay failures.
+            (message: String, cause: Throwable) => warn(message, cause),
+            600000L))
+        }
 
       // Register this instance for dynamic config changes to the KafkaConfig. This must be called
       // after the authorizer and quotaManagers are initialized, since it references those objects.
@@ -477,8 +477,8 @@ class ControllerServer(
       }
       metadataPublishers.forEach(p => sharedServer.loader.removeAndClosePublisher(p).get())
       metadataPublishers.clear()
-      disklessLifecycleEngine.foreach(engine => Utils.closeQuietly(engine, "diskless lifecycle engine"))
-      disklessLifecycleEngine = None
+      disklessControllerStorage.foreach(storage => Utils.closeQuietly(storage, "diskless controller storage"))
+      disklessControllerStorage = None
       if (metadataCache != null) {
         metadataCache = null
       }

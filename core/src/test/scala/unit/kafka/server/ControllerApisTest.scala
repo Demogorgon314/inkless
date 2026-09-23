@@ -17,6 +17,8 @@
 
 package kafka.server
 
+import io.aiven.inkless.engine.{DisklessTopicLifecycle, InklessTopicLifecycle}
+import io.aiven.inkless.engine.DisklessTopicLifecycle.ExecutionMode
 import io.aiven.inkless.control_plane.{ControlPlane, CreateTopicAndPartitionsRequest}
 import kafka.network.RequestChannel
 import kafka.server.QuotaFactory.QuotaManagers
@@ -35,7 +37,7 @@ import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.message.CreatePartitionsRequestData.CreatePartitionsTopic
 import org.apache.kafka.common.message.CreatePartitionsResponseData.CreatePartitionsTopicResult
 import org.apache.kafka.common.message.CreateTopicsRequestData.{CreatableTopic, CreatableTopicCollection}
-import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult
+import org.apache.kafka.common.message.CreateTopicsResponseData.{CreatableTopicResult, CreatableTopicConfigs}
 import org.apache.kafka.common.message.DeleteTopicsRequestData.DeleteTopicState
 import org.apache.kafka.common.message.DeleteTopicsResponseData.DeletableTopicResult
 import org.apache.kafka.common.message.IncrementalAlterConfigsRequestData.{AlterConfigsResource, AlterConfigsResourceCollection, AlterableConfig, AlterableConfigCollection}
@@ -164,7 +166,8 @@ class ControllerApisTest {
                                    controller: Controller,
                                    props: Properties = new Properties(),
                                    throttle: Boolean = false,
-                                   inklessControlPlane: Option[ControlPlane] = None): ControllerApis = {
+                                   inklessControlPlane: Option[ControlPlane] = None,
+                                   lifecycle: Option[DisklessTopicLifecycle] = None): ControllerApis = {
     props.put(KRaftConfigs.NODE_ID_CONFIG, nodeId: java.lang.Integer)
     props.put(KRaftConfigs.PROCESS_ROLES_CONFIG, "controller")
     props.put(KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG, "CONTROLLER")
@@ -185,7 +188,7 @@ class ControllerApisTest {
         true,
         () => FinalizedFeatures.fromKRaftVersion(MetadataVersion.latestTesting())),
       metadataCache,
-      inklessControlPlane
+      lifecycle.orElse(inklessControlPlane.map(new InklessTopicLifecycle(_)))
     )
   }
 
@@ -743,6 +746,37 @@ class ControllerApisTest {
     })
   }
 
+  @ParameterizedTest
+  @ValueSource(booleans = Array(false, true))
+  def testRequestDrivenCreationAwaitsStorageExceptForValidation(validateOnly: Boolean): Unit = {
+    val topicId = Uuid.randomUuid()
+    setDisklessTopicImage("foo", topicId, 2)
+    val controller = mock(classOf[Controller])
+    val lifecycle = mock(classOf[DisklessTopicLifecycle])
+    val provisioned = new CompletableFuture[Void]()
+    when(lifecycle.executionMode()).thenReturn(ExecutionMode.REQUEST_DRIVEN)
+    when(lifecycle.ensureTopic(ArgumentMatchers.eq("foo"), ArgumentMatchers.eq(topicId),
+      ArgumentMatchers.eq(2), any(), anyLong())).thenReturn(provisioned)
+    val response = new CreateTopicsResponseData()
+    response.topics().add(new CreatableTopicResult().setName("foo").setTopicId(topicId)
+      .setNumPartitions(2).setErrorCode(NONE.code())
+      .setConfigs(singletonList(new CreatableTopicConfigs()
+        .setName(TopicConfig.DISKLESS_ENABLE_CONFIG).setValue("true"))))
+    when(controller.createTopics(any(), any(), any())).thenReturn(CompletableFuture.completedFuture(response))
+    controllerApis = createControllerApis(None, controller, lifecycle = Some(lifecycle))
+    val request = new CreateTopicsRequestData().setValidateOnly(validateOnly)
+    request.topics().add(new CreatableTopic().setName("foo").setNumPartitions(2).setReplicationFactor(1.toShort))
+    val result = controllerApis.createTopics(ANONYMOUS_CONTEXT, request,
+      hasClusterAuth = true, _ => Set.empty, _ => Set("foo"))
+    if (validateOnly) {
+      verify(lifecycle, never()).ensureTopic(any(), any(), anyInt(), any(), anyLong())
+    } else {
+      assertFalse(result.isDone)
+      provisioned.complete(null)
+    }
+    assertEquals(response, result.get())
+  }
+
   @Test
   def testCreateTopics(): Unit = {
     val controller = new MockController.Builder().build()
@@ -833,6 +867,48 @@ class ControllerApisTest {
       hasClusterAuth = true,
       _ => Set.empty,
       _ => Set.empty).get().asScala.toSet)
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = Array(false, true))
+  def testRequestDrivenDeletionWaitsForStorageBeforeKRaft(failStorage: Boolean): Unit = {
+    val topicId = Uuid.randomUuid()
+    val controller = spy(new MockController.Builder().newInitialTopic("foo", topicId).build())
+    val lifecycle = mock(classOf[DisklessTopicLifecycle])
+    val deletion = new CompletableFuture[Void]()
+    when(lifecycle.executionMode()).thenReturn(ExecutionMode.REQUEST_DRIVEN)
+    when(lifecycle.deleteTopic("foo", topicId)).thenReturn(deletion)
+    setDisklessTopicImage("foo", topicId, 1)
+    controllerApis = createControllerApis(None, controller, lifecycle = Some(lifecycle))
+    val result = controllerApis.deleteTopics(ANONYMOUS_CONTEXT,
+      new DeleteTopicsRequestData().setTopicNames(singletonList("foo")),
+      ApiKeys.DELETE_TOPICS.latestVersion().toInt, hasClusterAuth = true, _ => Set.empty, _ => Set.empty)
+    assertFalse(result.isDone)
+    verify(controller, never()).deleteTopics(any(), any())
+    if (failStorage) {
+      deletion.completeExceptionally(new IllegalStateException("Storage unavailable"))
+      TestUtils.assertFutureThrows(classOf[IllegalStateException], result)
+      verify(controller, never()).deleteTopics(any(), any())
+    } else {
+      deletion.complete(null)
+      assertEquals(NONE.code(), result.get().get(0).errorCode())
+      verify(controller).deleteTopics(any(), ArgumentMatchers.eq(singleton(topicId)))
+    }
+  }
+
+  @Test
+  def testMetadataDrivenDeletionLeavesStorageToReconciler(): Unit = {
+    val topicId = Uuid.randomUuid()
+    val controller = new MockController.Builder().newInitialTopic("foo", topicId).build()
+    val lifecycle = mock(classOf[DisklessTopicLifecycle])
+    when(lifecycle.executionMode()).thenReturn(ExecutionMode.METADATA_DRIVEN)
+    setDisklessTopicImage("foo", topicId, 1)
+    controllerApis = createControllerApis(None, controller, lifecycle = Some(lifecycle))
+    val result = controllerApis.deleteTopics(ANONYMOUS_CONTEXT,
+      new DeleteTopicsRequestData().setTopicNames(singletonList("foo")),
+      ApiKeys.DELETE_TOPICS.latestVersion().toInt, hasClusterAuth = true, _ => Set.empty, _ => Set.empty)
+    assertEquals(NONE.code(), result.get().get(0).errorCode())
+    verify(lifecycle, never()).deleteTopic(any(), any())
   }
 
   @Test

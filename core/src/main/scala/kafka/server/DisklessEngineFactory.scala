@@ -18,7 +18,7 @@ package kafka.server
 
 import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.control_plane.ControlPlane
-import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, InklessDisklessEngine}
+import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessTopicLifecycle, InklessDisklessEngine, InklessTopicLifecycle}
 import kafka.server.metadata.InklessMetadataView
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.metadata.KRaftMetadataCache
@@ -31,6 +31,29 @@ import scala.jdk.OptionConverters._
 
 /** Assembles provider-specific resources once; request handlers only receive the engine. */
 object DisklessEngineFactory {
+  final class ControllerStorage(val lifecycle: DisklessTopicLifecycle, closeOwner: () => Unit) extends AutoCloseable {
+    override def close(): Unit = closeOwner()
+  }
+
+  def createControllerStorage(config: KafkaConfig, controlPlane: Option[ControlPlane]): Option[ControllerStorage] = {
+    if (config.disklessStorageSystemEnabled && config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
+      val engine = DisklessEngines.load(config.originals, () =>
+        throw new IllegalStateException("Missing diskless engine class"))
+      try Some(new ControllerStorage(engine.topicLifecycle(), () => engine.close()))
+      catch {
+        case failure: Throwable =>
+          try engine.close()
+          catch { case closeFailure: Throwable => failure.addSuppressed(closeFailure) }
+          throw failure
+      }
+    } else {
+      controlPlane.map { cp =>
+        val lifecycle = new InklessTopicLifecycle(cp)
+        new ControllerStorage(lifecycle, () => lifecycle.close())
+      }
+    }
+  }
+
   def create(config: KafkaConfig,
              time: Time,
              metadataCache: KRaftMetadataCache,

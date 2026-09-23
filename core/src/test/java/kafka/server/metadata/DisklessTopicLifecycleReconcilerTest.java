@@ -57,6 +57,7 @@ import io.aiven.inkless.engine.DisklessTopicLifecycle;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -96,16 +97,25 @@ class DisklessTopicLifecycleReconcilerTest {
 
     @BeforeEach
     void setUp() {
+        when(lifecycle.executionMode()).thenReturn(DisklessTopicLifecycle.ExecutionMode.METADATA_DRIVEN);
         when(lifecycle.ensureTopic(any(), any(), anyInt(), anyMap(), anyLong())).thenReturn(completedFuture(null));
         when(lifecycle.deleteTopic(any(), any())).thenReturn(completedFuture(null));
         when(lifecycle.sweepOrphans(anySet(), anyLong())).thenReturn(completedFuture(null));
         reconciler = newReconciler(SWEEP_INTERVAL_MS, MAX_CONCURRENT_OPERATIONS);
+        verify(lifecycle).executionMode();
     }
 
     @AfterEach
     void tearDown() {
         reconcilers.forEach(DisklessTopicLifecycleReconciler::close);
         executors.forEach(ScheduledExecutorService::shutdownNow);
+    }
+
+    @Test
+    void rejectsRequestDrivenLifecycle() {
+        when(lifecycle.executionMode()).thenReturn(DisklessTopicLifecycle.ExecutionMode.REQUEST_DRIVEN);
+        assertThrows(IllegalArgumentException.class,
+            () -> newReconciler(SWEEP_INTERVAL_MS, MAX_CONCURRENT_OPERATIONS));
     }
 
     @Test

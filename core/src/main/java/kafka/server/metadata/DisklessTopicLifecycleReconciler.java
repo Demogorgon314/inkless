@@ -156,6 +156,9 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
                                      int maxConcurrentOperations, ScheduledExecutorService executor) {
         this.nodeId = nodeId;
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle must not be null");
+        if (lifecycle.executionMode() != DisklessTopicLifecycle.ExecutionMode.METADATA_DRIVEN) {
+            throw new IllegalArgumentException("Lifecycle does not support metadata reconciliation");
+        }
         this.faultHandler = Objects.requireNonNull(faultHandler, "faultHandler must not be null");
         this.executor = Objects.requireNonNull(executor, "executor must not be null");
         if (sweepIntervalMs <= 0 || operationTimeoutMs <= 0 || maxConcurrentOperations <= 0) {

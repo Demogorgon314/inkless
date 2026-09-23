@@ -44,9 +44,9 @@ KafkaApis / ReplicaManager
               +-- Oxia metadata and producer-state snapshots
 
 Active controller
-  +-- DisklessTopicLifecycleReconciler
-        +-- provider's DisklessTopicLifecycle
-              +-- ensure, grow, reconfigure, delete, and sweep
+  +-- DisklessTopicLifecycle
+        +-- request-driven: ControllerApis -> InklessTopicLifecycle
+        +-- metadata-driven: Reconciler -> UrsaDisklessTopicLifecycle
 
 Broker metadata updates
   +-- fence deleted topic IDs and close cached partition handles
@@ -100,6 +100,32 @@ External engines have no native batch-coordinate cache. `DelayedFetch` hands
 waiting to the engine's asynchronous fetch implementation when that cache is
 absent. The native engine retains its original readiness probe. Kafka still
 combines classic and diskless results and applies its response handling.
+
+## Controller lifecycle shared by both providers
+
+Both providers implement `DisklessTopicLifecycle`. The controller factory owns
+the provider lifetime, and controller APIs depend only on the lifecycle SPI.
+The native service borrows the shared control plane; it must not close a client
+that the broker role may still use.
+
+Each provider explicitly selects an execution mode:
+
+| Mode | Creation and expansion | Deletion | Recovery |
+| --- | --- | --- | --- |
+| `REQUEST_DRIVEN` (native Inkless) | Provision after KRaft succeeds and before completing the response. Partition ranges exclude migrating partitions. | Complete storage deletion before deleting KRaft metadata. | Preserve the existing request-retry behavior. |
+| `METADATA_DRIVEN` (Ursa) | Reconcile the committed topic layout and configuration. | Reconcile committed deletion and durably fence the old topic ID. | Retry across leadership changes, inventory managed topics, and sweep orphans by source revision. |
+
+Both use `ensureTopic` and `deleteTopic`. `ensurePartitions` supports explicit
+partition ranges on the request-driven migration path; metadata-driven
+providers receive the desired whole-topic layout through `ensureTopic`.
+Validation-only requests perform no storage operations.
+
+Native Inkless does not yet expose a revision-aware catalog and durable
+reconciliation protocol through its ControlPlane API. Its inventory and orphan
+sweep operations therefore fail as unsupported, and the reconciler rejects
+request-driven services. Moving native Inkless to metadata-driven recovery
+requires a separate persistence change; the shared interface does not imply
+that guarantee.
 
 ## Build and configure
 
