@@ -18,7 +18,8 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.FetchOffsetHandler
+import java.util.function.Supplier
+import kafka.server.DisklessOffsetJob
 import io.aiven.inkless.engine.DisklessEngine.Fetcher
 import kafka.server.{KafkaConfig, ReplicaManager, ReplicationQuotaManager}
 import kafka.utils.TestUtils
@@ -68,7 +69,7 @@ class ConsolidationQuotaManagerTest {
 
   private def createEndPoint(quota: ReplicationQuotaManager): DisklessLeaderEndPoint = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = mock(classOf[ReplicaManager])
     val log = mock(classOf[UnifiedLog])
     val logConfig = mock(classOf[LogConfig])
@@ -84,7 +85,7 @@ class ConsolidationQuotaManagerTest {
     new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      () => fetchOffsetHandler.createJob(),
+      () => offsetJobs.get(),
       replicaManager,
       kafkaConfig,
       quota,

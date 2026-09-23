@@ -114,7 +114,7 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
     }
 
     private final int nodeId;
-    private final DisklessTopicLifecycle lifecycle;
+    private final DisklessTopicLifecycle.MetadataDriven lifecycle;
     private final BiConsumer<String, Throwable> faultHandler;
     private final long sweepIntervalMs;
     private final long operationTimeoutMs;
@@ -138,7 +138,7 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
     private ScheduledFuture<?> sweepTask;
     private boolean sweepInFlight;
 
-    public DisklessTopicLifecycleReconciler(int nodeId, DisklessTopicLifecycle lifecycle,
+    public DisklessTopicLifecycleReconciler(int nodeId, DisklessTopicLifecycle.MetadataDriven lifecycle,
                                             BiConsumer<String, Throwable> faultHandler, long sweepIntervalMs) {
         this(nodeId, lifecycle, faultHandler, sweepIntervalMs, DEFAULT_INITIAL_RETRY_MS, DEFAULT_MAX_RETRY_MS,
             DEFAULT_OPERATION_TIMEOUT_MS, DEFAULT_MAX_CONCURRENT_OPERATIONS,
@@ -150,15 +150,12 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
     }
 
     // Visible for testing.
-    DisklessTopicLifecycleReconciler(int nodeId, DisklessTopicLifecycle lifecycle,
+    DisklessTopicLifecycleReconciler(int nodeId, DisklessTopicLifecycle.MetadataDriven lifecycle,
                                      BiConsumer<String, Throwable> faultHandler, long sweepIntervalMs,
                                      long initialRetryMs, long maxRetryMs, long operationTimeoutMs,
                                      int maxConcurrentOperations, ScheduledExecutorService executor) {
         this.nodeId = nodeId;
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle must not be null");
-        if (lifecycle.executionMode() != DisklessTopicLifecycle.ExecutionMode.METADATA_DRIVEN) {
-            throw new IllegalArgumentException("Lifecycle does not support metadata reconciliation");
-        }
         this.faultHandler = Objects.requireNonNull(faultHandler, "faultHandler must not be null");
         this.executor = Objects.requireNonNull(executor, "executor must not be null");
         if (sweepIntervalMs <= 0 || operationTimeoutMs <= 0 || maxConcurrentOperations <= 0) {

@@ -22,7 +22,6 @@ import kafka.raft.KafkaRaftManager
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.metadata.{ClientQuotaMetadataManager, DynamicConfigPublisher, KRaftMetadataCachePublisher}
 import kafka.server.metadata.DisklessTopicLifecycleReconciler
-import io.aiven.inkless.engine.DisklessTopicLifecycle.ExecutionMode
 import kafka.server.DisklessEngineFactory.ControllerStorage
 
 import scala.collection.immutable
@@ -302,7 +301,7 @@ class ControllerServer(
         registrationsPublisher,
         apiVersionManager,
         metadataCache,
-        disklessControllerStorage.map(_.lifecycle))
+        disklessControllerStorage.flatMap(_.requestLifecycle))
       controllerApisHandlerPool = sharedServer.requestHandlerPoolFactory.createPool(
         config.nodeId,
         socketServer.dataPlaneRequestChannel,
@@ -345,8 +344,7 @@ class ControllerServer(
         ),
         "controller"))
 
-      disklessControllerStorage.map(_.lifecycle)
-        .filter(_.executionMode() == ExecutionMode.METADATA_DRIVEN).foreach { lifecycle =>
+      disklessControllerStorage.flatMap(_.metadataLifecycle).foreach { lifecycle =>
           metadataPublishers.add(new DisklessTopicLifecycleReconciler(config.nodeId, lifecycle,
             // Backend failures are retried by the reconciler; they are not metadata replay failures.
             (message: String, cause: Throwable) => warn(message, cause),

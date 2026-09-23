@@ -31,17 +31,42 @@ import java.util.concurrent.CompletableFuture;
  * <p>The implementation owns its catalog schema and metadata-store layout. Kafka supplies only
  * topic identity, partition count, and topic configuration. Every operation is idempotent: the
  * controller retries it either through the request path or through metadata reconciliation, as
- * selected by {@link #executionMode()}. A provider must not opt into reconciliation without its durable guarantees.
+ * expressed by separate request-driven and metadata-driven contracts.
  */
 public interface DisklessTopicLifecycle extends AutoCloseable {
-    enum ExecutionMode {
-        /** Provision after KRaft creation; delete storage before removing KRaft metadata. */
-        REQUEST_DRIVEN,
-        /** Reconcile committed metadata, with durable revision checks and deletion fences. */
-        METADATA_DRIVEN
+    /** Deletes one immutable topic incarnation; a same-name replacement has a different ID. */
+    CompletableFuture<Void> deleteTopic(String topicName, Uuid topicId);
+
+    /** Preserves request ordering: provision after KRaft creation, delete before KRaft deletion. */
+    interface RequestDriven extends DisklessTopicLifecycle {
+        CompletableFuture<Void> ensurePartitions(Set<PartitionRange> partitions);
+
+        default CompletableFuture<Void> ensureTopic(String topicName, Uuid topicId, int partitions) {
+            return ensurePartitions(Set.of(new PartitionRange(topicId, topicName, 0, partitions)));
+        }
     }
 
-    ExecutionMode executionMode();
+    /**
+     * Reconciles committed metadata. Implementations durably fence deleted IDs and reject updates
+     * older than the stored source revision. Kafka retries across controller leadership changes.
+     */
+    interface MetadataDriven extends DisklessTopicLifecycle {
+        /**
+         * Creates or grows the topic and exactly replaces its stored configuration. Delayed older
+         * revisions cannot overwrite newer state, and a deleted ID cannot be recreated.
+         */
+        CompletableFuture<Void> ensureTopic(String topicName, Uuid topicId, int partitions,
+                                            Map<String, String> configs, long sourceRevision);
+
+        /**
+         * Includes in-progress creates and deletes with explicit Kafka ownership and source revision.
+         * Storage names alone are not proof of ownership.
+         */
+        CompletableFuture<List<ManagedTopic>> listManagedTopics();
+
+        /** Deletes absent topic IDs only when their stored revision is at or below imageOffset. */
+        CompletableFuture<Void> sweepOrphans(Set<Uuid> liveTopicIds, long imageOffset);
+    }
 
     /** A half-open range of newly diskless partitions; excluded migrating partitions stay untouched. */
     record PartitionRange(Uuid topicId, String topicName, int firstPartition, int partitionLimit) {
@@ -52,15 +77,6 @@ public interface DisklessTopicLifecycle extends AutoCloseable {
                 throw new IllegalArgumentException("Invalid partition range");
             }
         }
-    }
-
-    /**
-     * Provisions explicit partition ranges after a request-driven partition increase. The broker
-     * initializes migrated partitions separately from their committed seal and producer state.
-     * Metadata-driven providers receive their desired layout through ensureTopic instead.
-     */
-    default CompletableFuture<Void> ensurePartitions(Set<PartitionRange> partitions) {
-        return CompletableFuture.failedFuture(new UnsupportedOperationException("Partition-range provisioning is unavailable"));
     }
 
     /**
@@ -84,52 +100,5 @@ public interface DisklessTopicLifecycle extends AutoCloseable {
                 throw new IllegalArgumentException("sourceRevision must not be negative");
             }
         }
-    }
-
-    /**
-     * Ensures one logical diskless topic exists at the supplied KRaft metadata revision.
-     *
-     * <p>The implementation creates the topic when it is absent, grows its partition layout when
-     * needed, and applies the configuration it owns. Metadata-driven providers exactly replace
-     * their stored configuration and use sourceRevision to reject delayed older updates.
-     * Request-driven providers may keep configuration solely in Kafka metadata.
-     */
-    CompletableFuture<Void> ensureTopic(String topicName, Uuid topicId, int partitions,
-                                        Map<String, String> configs, long sourceRevision);
-
-    /**
-     * Deletes the logical topic at the point selected by executionMode().
-     *
-     * <p>Kafka topic IDs identify immutable topic incarnations. Implementations must durably fence
-     * this ID in METADATA_DRIVEN mode so an in-flight create cannot recreate it after completion.
-     * REQUEST_DRIVEN mode deletes storage before KRaft metadata and retains request retry semantics;
-     * it does not claim a durable fence. A same-name replacement always has a different topic ID.
-     */
-    CompletableFuture<Void> deleteTopic(String topicName, Uuid topicId);
-
-    /**
-     * Lists non-terminal Kafka topic incarnations for metadata-driven reconciliation.
-     *
-     * <p>The active Kafka controller uses this semantic inventory to reconcile storage objects
-     * left behind by a controller restart. The inventory must include objects still being created
-     * or deleted so an abandoned lifecycle claim cannot remain hidden. Implementations must filter
-     * using durable ownership metadata and must not infer ownership from a storage-specific name
-     * alone. Each entry must also carry the KRaft source revision from the reconciliation that made
-     * it visible, so a newly elected but lagging controller cannot delete newer state.
-     */
-    default CompletableFuture<List<ManagedTopic>> listManagedTopics() {
-        return CompletableFuture.failedFuture(new UnsupportedOperationException("Managed inventory is unavailable"));
-    }
-
-    /**
-     * Deletes managed topics absent from the controller image in metadata-driven mode.
-     *
-     * <p>{@code liveTopicIds} is the set of diskless topic IDs present in the image at
-     * {@code imageOffset}. An implementation must only delete an entry whose source revision is at
-     * or below {@code imageOffset}, so state created from a newer image than the caller has seen
-     * survives.
-     */
-    default CompletableFuture<Void> sweepOrphans(Set<Uuid> liveTopicIds, long imageOffset) {
-        return CompletableFuture.failedFuture(new UnsupportedOperationException("Orphan reconciliation is unavailable"));
     }
 }

@@ -18,7 +18,6 @@ package io.aiven.inkless.engine;
 
 import org.apache.kafka.common.Uuid;
 
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
@@ -27,23 +26,12 @@ import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.CreateTopicAndPartitionsRequest;
 
 /** Preserves native provisioning and deletion ordering without claiming revision or deletion fences. */
-public final class InklessTopicLifecycle implements DisklessTopicLifecycle {
+public final class InklessTopicLifecycle implements DisklessTopicLifecycle.RequestDriven {
     private final ControlPlane controlPlane;
 
     /** Borrows the control plane; SharedServer retains its lifetime across broker and controller roles. */
     public InklessTopicLifecycle(ControlPlane controlPlane) {
         this.controlPlane = controlPlane;
-    }
-
-    @Override
-    public ExecutionMode executionMode() {
-        return ExecutionMode.REQUEST_DRIVEN;
-    }
-
-    @Override
-    public CompletableFuture<Void> ensureTopic(String topicName, Uuid topicId, int partitions,
-                                               Map<String, String> configs, long sourceRevision) {
-        return ensurePartitions(Set.of(new PartitionRange(topicId, topicName, 0, partitions)));
     }
 
     @Override

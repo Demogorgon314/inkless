@@ -19,6 +19,7 @@ package io.aiven.inkless.engine;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult;
+import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
@@ -31,6 +32,7 @@ import org.apache.kafka.server.util.Scheduler;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -112,17 +114,11 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public DisklessTopicLifecycle topicLifecycle() {
-        return new InklessTopicLifecycle(sharedState.controlPlane());
+    public Optional<RecordDeleter> recordDeleter() {
+        return Optional.of(this::deleteRecords);
     }
 
-    @Override
-    public boolean supportsDeleteRecords() {
-        return true;
-    }
-
-    @Override
-    public CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
+    private CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
         Map<TopicPartition, Long> offsets) {
         var result = new CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>>();
         try {
@@ -141,7 +137,11 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public Optional<List<FetchAvailability>> probeFetch(List<FetchProbe> requests) {
+    public Optional<FetchProber> fetchProber() {
+        return Optional.of(this::probeFetch);
+    }
+
+    private List<FetchAvailability> probeFetch(List<FetchProbe> requests) {
         List<FindBatchResponse> responses;
         if (!sharedState.isBatchCoordinateCacheEnabled()) {
             responses = sharedState.controlPlane().findBatches(requests.stream()
@@ -167,7 +167,7 @@ public final class InklessDisklessEngine implements DisklessEngine {
                 response.errors() == Errors.NONE && !response.batches().isEmpty(),
                 response.highWatermark(), response.estimatedByteSize(request.offset())));
         }
-        return Optional.of(result);
+        return result;
     }
 
     InklessDisklessEngine(AppendHandler appendHandler, FetchHandler fetchHandler, FetchOffsetHandler offsetHandler) {
@@ -177,13 +177,8 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public void configure(Map<String, ?> configs) {
-        // SharedState already configures the native handlers.
-    }
-
-    @Override
     public CompletableFuture<Map<TopicIdPartition, PartitionResponse>> append(
-        Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal) {
+        Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal, DisklessRequestContext requestContext) {
         return appendHandler.handle(records, requestLocal);
     }
 
@@ -194,8 +189,37 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public OffsetJob createOffsetJob() {
-        return offsetHandler.createJob();
+    public CompletableFuture<Map<TopicIdPartition, ListOffsetsResult>> listOffsets(
+        Map<TopicIdPartition, ListOffsetsSpec> requests) {
+        var job = offsetHandler.createJob();
+        var nativeRequests = new LinkedHashMap<TopicIdPartition, ListOffsetsPartition>();
+        var results = new LinkedHashMap<TopicIdPartition, CompletableFuture<ListOffsetsResult>>();
+        requests.forEach((partition, spec) -> {
+            var request = new ListOffsetsPartition().setPartitionIndex(partition.partition())
+                .setTimestamp(spec.timestamp()).setCurrentLeaderEpoch(spec.currentLeaderEpoch().orElse(-1));
+            nativeRequests.put(partition, request);
+            results.put(partition, job.add(partition.topicPartition(), request).thenApply(result -> {
+                if (result.exception().isPresent()) {
+                    return new ListOffsetsResult(Errors.forException(result.exception().get()), -1L, -1L, Optional.empty());
+                }
+                return result.timestampAndOffset().map(offset -> new ListOffsetsResult(
+                    Errors.NONE, offset.timestamp, offset.offset, offset.leaderEpoch))
+                    .orElseGet(() -> new ListOffsetsResult(Errors.NONE, -1L, -1L, Optional.empty()));
+            }));
+        });
+        var completed = CompletableFuture.allOf(results.values().toArray(CompletableFuture[]::new))
+            .thenApply(ignored -> {
+                Map<TopicIdPartition, ListOffsetsResult> response = new LinkedHashMap<>();
+                results.forEach((partition, result) -> response.put(partition, result.join()));
+                return response;
+            });
+        completed.whenComplete((ignored, failure) -> {
+            if (completed.isCancelled()) {
+                job.cancelHandler().cancel(true);
+            }
+        });
+        job.start(nativeRequests);
+        return completed;
     }
 
     @Override

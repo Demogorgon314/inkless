@@ -18,7 +18,7 @@
 package kafka.server
 
 import io.aiven.inkless.engine.DisklessTopicLifecycle
-import io.aiven.inkless.engine.DisklessTopicLifecycle.{ExecutionMode, PartitionRange}
+import io.aiven.inkless.engine.DisklessTopicLifecycle.PartitionRange
 
 import java.{lang, util}
 import java.nio.ByteBuffer
@@ -83,10 +83,10 @@ class ControllerApis(
   val registrationsPublisher: ControllerRegistrationsPublisher,
   val apiVersionManager: ApiVersionManager,
   val metadataCache: KRaftMetadataCache,
-  val disklessTopicLifecycle: Option[DisklessTopicLifecycle] = None
+  val disklessTopicLifecycle: Option[DisklessTopicLifecycle.RequestDriven] = None
 ) extends ApiRequestHandler with Logging {
 
-  private val requestLifecycle = disklessTopicLifecycle.filter(_.executionMode() == ExecutionMode.REQUEST_DRIVEN)
+  private val requestLifecycle = disklessTopicLifecycle
 
   this.logIdent = s"[ControllerApis nodeId=${config.nodeId}] "
   val authHelper = new AuthHelper(authorizerPlugin)
@@ -511,10 +511,7 @@ class ControllerApis(
 
       val operations = successfullyCreatedTopics
         .filter(t => inklessMetadataView.isDisklessTopic(t.name()))
-        .map(t => lifecycle.ensureTopic(t.name(), t.topicId(), t.numPartitions(),
-          inklessMetadataView.getTopicConfig(t.name()).originals.asScala
-            .map { case (key, value) => key -> value.toString }.asJava,
-          metadataCache.currentImage().highestOffsetAndEpoch().offset()))
+        .map(t => lifecycle.ensureTopic(t.name(), t.topicId(), t.numPartitions()))
       CompletableFuture.allOf(operations.toSeq: _*)
     }.getOrElse(CompletableFuture.completedFuture(null))
   }

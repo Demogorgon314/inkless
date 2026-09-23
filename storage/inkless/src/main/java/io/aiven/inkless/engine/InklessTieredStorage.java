@@ -44,10 +44,10 @@ import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.PruneDisklessLogsError;
 import io.aiven.inkless.control_plane.PruneDisklessLogsRequest;
 import io.aiven.inkless.control_plane.RepairDisklessLogRequest;
-import io.aiven.inkless.engine.DisklessEngine.LogInitialization;
-import io.aiven.inkless.engine.DisklessEngine.OffsetResult;
+import io.aiven.inkless.engine.TieredStorage.LogInitialization;
+import io.aiven.inkless.engine.TieredStorage.OffsetResult;
 
-final class InklessTieredStorage implements DisklessEngine.TieredStorage, Closeable {
+final class InklessTieredStorage implements TieredStorage, Closeable {
     private final SharedState state;
     private final Optional<FetchHandler> fetchHandler;
 

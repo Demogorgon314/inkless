@@ -24,7 +24,6 @@ import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
-import org.apache.kafka.storage.diskless.DisklessFutures;
 import org.apache.kafka.storage.diskless.ListOffsetsPartitionRequest;
 import org.apache.kafka.storage.diskless.ListOffsetsPartitionResponse;
 import org.apache.kafka.storage.diskless.idempotent.ProducerStateManager;
@@ -45,6 +44,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
+import io.aiven.inkless.engine.DisklessFutures;
 import io.lakestream.api.Log;
 import io.lakestream.api.LogOffset;
 import io.lakestream.api.exception.LogFencedException;

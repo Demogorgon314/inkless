@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.consume.FetchOffsetHandler
+import kafka.server.DisklessOffsetJob
 import kafka.server.metadata.InklessMetadataView
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition
@@ -51,8 +51,8 @@ class DisklessFetchOffsetRouterTest {
   // tests that need a result complete this future before invoking route().
   private val disklessTaskFuture: CompletableFuture[FileRecordsOrError] = new CompletableFuture[FileRecordsOrError]()
 
-  private val job: FetchOffsetHandler.Job = {
-    val m = mock(classOf[FetchOffsetHandler.Job])
+  private val job: DisklessOffsetJob = {
+    val m = mock(classOf[DisklessOffsetJob])
     when(m.add(any(), any())).thenAnswer(_ => disklessTaskFuture)
     when(m.cancelHandler()).thenReturn(new CompletableFuture[Void]())
     m
@@ -102,7 +102,7 @@ class DisklessFetchOffsetRouterTest {
                     classicLogStartOffset: Option[Long] = None,
                     hasCompleteClassicPrefix: Boolean = true,
                     classicResult: ListOffsetsPartitionStatus = defaultClassicResult,
-                    newJob: () => FetchOffsetHandler.Job = () =>
+                    newJob: () => DisklessOffsetJob = () =>
                       throw new AssertionError("newJob() should not be called by this routing path")): ListOffsetsPartitionStatus = {
     router.route(
       job = job,
@@ -354,9 +354,9 @@ class DisklessFetchOffsetRouterTest {
 
     val emptyResult = new FileRecordsOrError(Optional.empty(), Optional.empty())
 
-    val freshJobs = mutable.ListBuffer.empty[FetchOffsetHandler.Job]
-    def newFreshJob(): FetchOffsetHandler.Job = {
-      val m = mock(classOf[FetchOffsetHandler.Job])
+    val freshJobs = mutable.ListBuffer.empty[DisklessOffsetJob]
+    def newFreshJob(): DisklessOffsetJob = {
+      val m = mock(classOf[DisklessOffsetJob])
       when(m.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyResult))
       when(m.cancelHandler()).thenReturn(new CompletableFuture[Void]())
       freshJobs += m
@@ -527,7 +527,7 @@ class DisklessFetchOffsetRouterTest {
       val fresh = new CompletableFuture[FileRecordsOrError]()
       fresh.complete(offsetResult(42L))
       val jobForBroker = {
-        val m = mock(classOf[FetchOffsetHandler.Job])
+        val m = mock(classOf[DisklessOffsetJob])
         when(m.add(any(), any())).thenAnswer(_ => fresh)
         when(m.cancelHandler()).thenReturn(new CompletableFuture[Void]())
         m

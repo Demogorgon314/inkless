@@ -69,9 +69,9 @@ The engine cancels its scheduled tasks and closes handlers before shared state.
 
 | Boundary | Contract |
 | --- | --- |
-| `append`, `fetch`, `OffsetJob` | Asynchronous record operations; Kafka retains protocol routing and response handling. |
-| `supportsDeleteRecords`, `deleteRecords` | Reject unsupported deletion before touching a local-log leg; return per-partition results or an exceptional future mapped by the broker. |
-| `probeFetch` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
+| `append`, `fetch`, `listOffsets` | Asynchronous record operations; Kafka retains protocol routing and response handling. |
+| `recordDeleter` | Reject unsupported deletion before touching a local-log leg; return per-partition results or an exceptional future mapped by the broker. |
+| `fetchProber` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
 | `start`, `close` | Engine owns maintenance tasks and resources; startup runs once, and native close is idempotent. |
 | `TieredStorage` | Optional fetch, cross-tier offset, prune, initialize, and repair operations. Kafka owns local-log coordination and retries. |
 | `DisklessTopicLifecycle` | Separate controller service for topic creation, expansion, configuration, deletion, and reconciliation. |
@@ -88,13 +88,24 @@ of the selected storage engine.
 
 `DisklessEngine.Context` supplies Kafka-owned services and metadata lookups.
 The Ursa adapter translates append, fetch, and offset lookup and invokes the
-copied UFK implementation. Producer state uses UFK's stable `no-zone` namespace.
-The SPI does not yet carry a reliable client zone; a broker's rack must not
-change a producer's identity after failover.
+copied UFK implementation. Append receives an immutable `DisklessRequestContext`
+with client ID, listener, and broker ID. Produce has no rack field; the broker
+leaves the optional client rack empty. Producer state retains UFK's stable
+`no-zone` namespace: client routing hints alone do not establish zone ownership.
+Adding zone-based producer identity requires coordinated routing and owner reconciliation.
 
-`OffsetJob` preserves batching and cancellation in the existing ListOffsets
-router. The isolated loader also establishes the provider context classloader
-when invoking returned offset jobs, tiered-storage capabilities, and lifecycle services.
+Kafka's `DisklessOffsetJob` owns batching, cancellation, and purgatory conversion.
+It resolves immutable topic IDs before dispatching a batch to `listOffsets`.
+The engine returns typed results without Kafka's private `FileRecordsOrError`.
+Cancellation stops waiting and attempts to cancel backend work; it does not promise
+that the backend has stopped.
+
+Optional deletion, readiness probing, and tiered-storage services use
+`Optional<Capability>` consistently. `TieredStorage` is a separate extension
+contract; broker code never downcasts to the native implementation.
+The loader establishes the plugin context classloader for component and capability
+calls. Providers must preserve that context when submitting work to executors
+they do not own; the synchronous proxy cannot govern arbitrary future callbacks.
 
 External engines have no native batch-coordinate cache. `DelayedFetch` hands
 waiting to the engine's asynchronous fetch implementation when that cache is
@@ -108,22 +119,24 @@ the provider lifetime, and controller APIs depend only on the lifecycle SPI.
 The native service borrows the shared control plane; it must not close a client
 that the broker role may still use.
 
-Each provider explicitly selects an execution mode:
+Each lifecycle implements exactly one typed contract. The controller factory
+selects the request service or reconciler once; ControllerApis accepts only
+`RequestDriven`, and the reconciler accepts only `MetadataDriven`:
 
 | Mode | Creation and expansion | Deletion | Recovery |
 | --- | --- | --- | --- |
-| `REQUEST_DRIVEN` (native Inkless) | Provision after KRaft succeeds and before completing the response. Partition ranges exclude migrating partitions. | Complete storage deletion before deleting KRaft metadata. | Preserve the existing request-retry behavior. |
-| `METADATA_DRIVEN` (Ursa) | Reconcile the committed topic layout and configuration. | Reconcile committed deletion and durably fence the old topic ID. | Retry across leadership changes, inventory managed topics, and sweep orphans by source revision. |
+| `RequestDriven` (native Inkless) | Provision after KRaft succeeds and before completing the response. Partition ranges exclude migrating partitions. | Complete storage deletion before deleting KRaft metadata. | Preserve the existing request-retry behavior. |
+| `MetadataDriven` (Ursa) | Reconcile the committed topic layout and configuration. | Reconcile committed deletion and durably fence the old topic ID. | Retry across leadership changes, inventory managed topics, and sweep orphans by source revision. |
 
-Both use `ensureTopic` and `deleteTopic`. `ensurePartitions` supports explicit
-partition ranges on the request-driven migration path; metadata-driven
-providers receive the desired whole-topic layout through `ensureTopic`.
-Validation-only requests perform no storage operations.
+Both contracts share immutable topic identity and idempotent deletion.
+`RequestDriven.ensurePartitions` supports explicit ranges on the migration path.
+Its `ensureTopic` has no unused configuration or revision arguments.
+`MetadataDriven.ensureTopic` receives the desired layout, configuration, and
+source revision. Validation-only requests perform no storage operations.
 
 Native Inkless does not yet expose a revision-aware catalog and durable
-reconciliation protocol through its ControlPlane API. Its inventory and orphan
-sweep operations therefore fail as unsupported, and the reconciler rejects
-request-driven services. Moving native Inkless to metadata-driven recovery
+reconciliation protocol through its ControlPlane API. Its request-driven contract
+therefore has no inventory or orphan-sweep operations. Moving native Inkless to metadata-driven recovery
 requires a separate persistence change; the shared interface does not imply
 that guarantee.
 
@@ -141,7 +154,7 @@ and storage settings:
 
 ```properties
 diskless.storage.system.enable=true
-diskless.engine.class.name=org.apache.kafka.storage.diskless.UrsaDisklessEngine
+diskless.engine.class.name=org.apache.kafka.storage.diskless.UrsaStorageProvider
 diskless.engine.class.path=/absolute/path/to/storage/ursa/build/plugin/*
 
 diskless.engine.config.ursa.catalog.oxia.service.url=oxia://localhost:6648/default
@@ -162,6 +175,9 @@ Unconfigured topics keep their classic behavior. Omitting the engine properties
 selects the native Inkless implementation.
 
 The loader strips `diskless.engine.config.` before calling the provider.
+`diskless.engine.class.name` names a `DisklessStorageProvider`, not a
+`DisklessEngine`. This changes the experimental PoC contract; existing PoC
+configurations must select `UrsaStorageProvider` and rebuild their plugin.
 The properties are experimental and are read from the original broker
 configuration; they are not registered as stable Kafka public configuration.
 There is no separate engine request-timeout setting. Existing request
@@ -190,17 +206,24 @@ are reclaimed with the classloader instead of being closed eagerly: gRPC may
 still load classes during asynchronous shutdown after its client returns from
 `close()`.
 
-The controller loads the provider without a broker context and obtains its
-lifecycle service. The provider owns that service and closes it at controller
-shutdown. Only the active controller reconciles committed metadata. The copied
+The stateless provider has separate factory methods for a fully initialized
+broker engine and controller lifecycle. Each returned component owns its resources;
+Kafka closes it independently, releasing its classloader lease. A failed factory
+call must close resources it opened. No partially initialized broker engine is
+constructed on the controller. Only the active controller reconciles committed metadata. The copied
 reconciler retains bounded concurrency, retries, metadata revisions, and orphan
 recovery; its sweep interval is ten minutes. Retriable backend failures are
 logged and metered, rather than treated as Kafka metadata replay faults.
 
 Broker opens remain create-if-absent, so requests can race with controller
 reconciliation. Both use the same topic ID, partition count, and metadata
-revision. Deletion fences the immutable topic ID before retiring local handles;
-a same-name replacement gets a different storage identity.
+revision. Deletion fences the immutable topic ID before retiring local handles under the
+same lifecycle lock; a same-name replacement gets a different storage identity.
+The Ursa engine also checks tracked partitions against a consistent Kafka metadata
+image every 30 seconds and closes handles for invalid identities or partitions.
+This fallback preserves persisted producer snapshots; durable deletion belongs to
+the controller. It is not idle eviction or zone-owner reconciliation, and valid
+partitions may remain cached on any broker that has served them.
 
 ## Source provenance and maintenance
 
@@ -261,5 +284,6 @@ fetch boundaries demonstrated here.
 and [KIP-1164](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/350783984/KIP-1164+Diskless+Coordinator)
 still require a broader agreement on replicas, transactions, and compatibility.
 This PoC does not establish those semantics for external engines. The public
-SPI should also use topic-ID-aware offset requests/results instead of exposing
-Kafka's private purgatory job shape.
+SPI now uses topic-ID-aware offset requests/results. Metadata configuration
+suppliers inside the copied UFK implementation still look up names; replacing
+those with incarnation-aware snapshots remains follow-up work.

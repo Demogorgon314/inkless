@@ -16,12 +16,10 @@
  */
 package io.aiven.inkless.engine;
 
-import org.apache.kafka.common.Configurable;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult;
-import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
@@ -31,7 +29,6 @@ import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
 import org.apache.kafka.server.util.Scheduler;
-import org.apache.kafka.storage.internals.log.OffsetResultHolder.FileRecordsOrError;
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.Closeable;
@@ -39,31 +36,26 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 
 /**
  * Experimental broker data-plane boundary. The engine owns record validation, offsets,
  * producer state, and persistence; Kafka owns authorization and classic/diskless routing.
  * This interface is not a complete storage-provider or stable public API.
  */
-public interface DisklessEngine extends Configurable, Closeable {
+public interface DisklessEngine extends Closeable {
+    /**
+     * Kafka-owned broker services. isCurrentPartition checks ID, name, partition, and diskless mode
+     * in one metadata snapshot; it does not express broker or zone ownership.
+     */
     record Context(Time time, int brokerId, BrokerTopicStats metrics,
-                   Map<String, Object> logDefaults, Function<String, Uuid> topicId,
+                   Map<String, Object> logDefaults,
                    Function<String, Map<String, String>> topicConfig,
-                   Function<String, OptionalInt> partitionCount, LongSupplier metadataRevision) {
-    }
-
-    /** Initializes broker services after configure and before the first data request. */
-    default void initialize(Context context) {
-    }
-
-    /** Creates the controller service; the engine owns and closes it. No broker context is required. */
-    default DisklessTopicLifecycle topicLifecycle() {
-        throw new UnsupportedOperationException("This engine has no controller lifecycle");
+                   Function<String, OptionalInt> partitionCount, LongSupplier metadataRevision,
+                   Predicate<TopicIdPartition> isCurrentPartition) {
     }
 
     /** Fences deleted topic incarnations before the broker retires their partition handles. */
@@ -78,7 +70,7 @@ public interface DisklessEngine extends Configurable, Closeable {
      * thread; asynchronous work must own any buffers it retains beyond the call.
      */
     CompletableFuture<Map<TopicIdPartition, PartitionResponse>> append(
-        Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal);
+        Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal, DisklessRequestContext requestContext);
 
     /**
      * Preserves request iteration order when spending the shared fetch byte budget.
@@ -87,20 +79,32 @@ public interface DisklessEngine extends Configurable, Closeable {
     CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);
 
-    OffsetJob createOffsetJob();
+    record ListOffsetsSpec(long timestamp, Optional<Integer> currentLeaderEpoch) { }
+
+    /** A negative offset means that no record matches the timestamp. */
+    record ListOffsetsResult(Errors error, long timestamp, long offset, Optional<Integer> leaderEpoch) { }
+
+    /**
+     * Returns one result per requested topic incarnation. Kafka resolves topic IDs before dispatch.
+     * Canceling the future is best effort and does not guarantee cancellation of backend work.
+     */
+    CompletableFuture<Map<TopicIdPartition, ListOffsetsResult>> listOffsets(
+        Map<TopicIdPartition, ListOffsetsSpec> requests);
 
     /** Starts engine-owned maintenance after broker construction. Called once before shutdown. */
     default void start(Scheduler scheduler, long initialDelayMs) {
     }
 
-    default boolean supportsDeleteRecords() {
-        return false;
+    /** Optional deletion support. Capability availability stays fixed for this engine's lifetime. */
+    default Optional<RecordDeleter> recordDeleter() {
+        return Optional.empty();
     }
 
-    /** Returns one result per partition; implementations must complete even if a topic disappears. */
-    default CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
-        Map<TopicPartition, Long> offsets) {
-        return CompletableFuture.failedFuture(new UnsupportedOperationException("DeleteRecords is unavailable"));
+    @FunctionalInterface
+    interface RecordDeleter {
+        /** Returns one result per partition, including partitions deleted during the request. */
+        CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
+            Map<TopicPartition, Long> offsets);
     }
 
     record FetchProbe(TopicIdPartition partition, long offset, int maxBytes) { }
@@ -109,12 +113,18 @@ public interface DisklessEngine extends Configurable, Closeable {
     record FetchAvailability(TopicIdPartition partition, Errors error, boolean hasData,
                              long highWatermark, long estimatedBytes) { }
 
-    /**
-     * Best-effort, unbudgeted readiness hint. Empty means the broker must attempt asynchronous fetch.
-     * A zero-byte result can be stale and must never replace the authoritative fetch response.
-     */
-    default Optional<List<FetchAvailability>> probeFetch(List<FetchProbe> requests) {
+    /** Optional readiness service, owned and closed by the engine. */
+    default Optional<FetchProber> fetchProber() {
         return Optional.empty();
+    }
+
+    @FunctionalInterface
+    interface FetchProber {
+        /**
+         * Returns ordered, unbudgeted readiness hints. A zero-byte result can be stale and must
+         * never replace an authoritative fetch response.
+         */
+        List<FetchAvailability> probeFetch(List<FetchProbe> requests);
     }
 
     /** Optional cooperation with Kafka's local and remote tiers; absent for standalone engines. */
@@ -122,70 +132,10 @@ public interface DisklessEngine extends Configurable, Closeable {
         return Optional.empty();
     }
 
-    /** A nonnegative offset is usable only with NONE; a negative offset means no value is available. */
-    record OffsetResult(Errors error, long offset) { }
-
-    record ProducerState(long producerId, short producerEpoch, int baseSequence, int lastSequence,
-                         long assignedOffset, long batchMaxTimestamp) { }
-
-    record LogInitialization(Uuid topicId, String topicName, int partition,
-                             long logStartOffset, long disklessStartOffset, List<ProducerState> producerStates) { }
-
     /** Asynchronous record fetch with the same ordering and ownership contract as engine fetch. */
     @FunctionalInterface
     interface Fetcher {
         CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> handle(
             FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);
-    }
-
-    /**
-     * Kafka owns local-log coordination and retries; the engine owns external metadata and caches.
-     * Metadata methods retain the native synchronous contract; callers must not treat them as nonblocking.
-     * Returned services are owned and closed by the engine, never by their callers.
-     */
-    interface TieredStorage extends Fetcher {
-        /**
-         * Returns only the remote start reported by the local-log leader. Never substitutes the
-         * diskless prune frontier: Kafka uses this value to decide which remote data it can reclaim.
-         */
-        OptionalLong remoteLogStartOffset(TopicIdPartition partition);
-
-        /** Returns the cross-tier logical earliest offset, independently of this broker's local log. */
-        OptionalLong earliestOffset(TopicIdPartition partition);
-
-        /** Advances logical earliest offsets monotonically; does not physically delete remote-tier data. */
-        Map<TopicIdPartition, OffsetResult> advanceEarliestOffsets(Map<TopicIdPartition, Long> offsets);
-
-        /** Queues the leader's remote-start report for engine-owned persistence. */
-        void reportRemoteLogStartOffset(TopicPartition partition, long offset);
-
-        /** Prunes through Kafka's inclusive safe tiered offsets; results contain the new diskless starts. */
-        Map<TopicIdPartition, OffsetResult> prune(Map<TopicIdPartition, Long> highestTieredOffsets);
-
-        long cleanupIntervalMs();
-
-        /**
-         * Applies the seal and producer state after KRaft commits the transition, on the leader only.
-         * Returns outcomes in request order; INVALID_REQUEST means already initialized.
-         */
-        List<Errors> initializeLogs(List<LogInitialization> requests);
-
-        /** Reconciles existing external log metadata with the seal committed in KRaft. */
-        Errors repairLog(TopicIdPartition partition, long startOffset);
-    }
-
-    /**
-     * Batches lookups before start and exposes cancellation to Kafka's ListOffsets purgatory.
-     * Each request, including a delayed hybrid-read fallback, needs a fresh job.
-     * This shape preserves the existing broker integration for the proof of concept.
-     */
-    interface OffsetJob {
-        boolean mustHandle(String topic);
-
-        CompletableFuture<FileRecordsOrError> add(TopicPartition partition, ListOffsetsPartition request);
-
-        Future<Void> cancelHandler();
-
-        void start();
     }
 }

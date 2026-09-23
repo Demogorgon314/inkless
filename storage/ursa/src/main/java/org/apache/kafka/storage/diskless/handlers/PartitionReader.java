@@ -23,7 +23,6 @@ import org.apache.kafka.common.record.internal.Record;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
-import org.apache.kafka.storage.diskless.DisklessFutures;
 import org.apache.kafka.storage.diskless.ListOffsetsPartitionRequest;
 import org.apache.kafka.storage.diskless.ListOffsetsPartitionResponse;
 import org.apache.kafka.storage.diskless.LogEntryUtils;
@@ -43,6 +42,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import io.aiven.inkless.engine.DisklessFutures;
 import io.lakestream.api.Log;
 import io.lakestream.api.LogCursor;
 import io.lakestream.api.LogEntry;

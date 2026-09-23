@@ -21,11 +21,9 @@ import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.utils.ChildFirstClassLoader;
 import org.apache.kafka.common.utils.Utils;
 
-import java.io.IOException;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.function.Supplier;
 
 /** Loads engines with shared Kafka APIs and an isolated provider dependency runtime. */
 public final class DisklessEngines {
@@ -36,15 +34,18 @@ public final class DisklessEngines {
     private DisklessEngines() {
     }
 
-    public static DisklessEngine load(Map<String, ?> configs, Supplier<DisklessEngine> nativeEngine) {
-        return load(configs, nativeEngine, null);
+    public static DisklessEngine loadBroker(Map<String, ?> configs, DisklessEngine.Context context) {
+        return load(configs, DisklessEngine.class, (provider, properties) -> provider.createBrokerEngine(properties, context));
     }
 
-    public static DisklessEngine load(Map<String, ?> configs, Supplier<DisklessEngine> nativeEngine,
-                                      DisklessEngine.Context context) {
+    public static DisklessTopicLifecycle loadLifecycle(Map<String, ?> configs) {
+        return load(configs, DisklessTopicLifecycle.class, DisklessStorageProvider::createTopicLifecycle);
+    }
+
+    private static <T> T load(Map<String, ?> configs, Class<T> type, ComponentFactory<T> factory) {
         Object className = configs.get(CLASS_NAME_CONFIG);
         if (className == null) {
-            return nativeEngine.get();
+            throw new ConfigException(CLASS_NAME_CONFIG, null, "A storage provider class is required");
         }
         DisklessClassLoaderRegistry.Lease lease = null;
         try {
@@ -60,13 +61,24 @@ public final class DisklessEngines {
             }
             lease = DisklessClassLoaderRegistry.acquire(urls, DisklessEngine.class.getClassLoader());
             var acquired = lease;
-            DisklessEngine engine = DisklessClassLoaderContext.call(lease.classLoader(), () -> {
-                DisklessEngine instance = Utils.newInstance(
-                    Class.forName(className.toString(), true, acquired.classLoader()).asSubclass(DisklessEngine.class));
-                configure(instance, configs, context);
-                return instance;
+            T component = DisklessClassLoaderContext.call(lease.classLoader(), () -> {
+                DisklessStorageProvider provider = Utils.newInstance(
+                    Class.forName(className.toString(), true, acquired.classLoader()).asSubclass(DisklessStorageProvider.class));
+                return factory.create(provider, providerConfig(configs));
             });
-            return DisklessClassLoaderContext.leased(DisklessEngine.class, engine, lease);
+            try {
+                return DisklessClassLoaderContext.leased(type, component, lease);
+            } catch (RuntimeException | Error failure) {
+                try {
+                    DisklessClassLoaderContext.call(lease.classLoader(), () -> {
+                        ((AutoCloseable) component).close();
+                        return null;
+                    });
+                } catch (Exception | Error closeFailure) {
+                    failure.addSuppressed(closeFailure);
+                }
+                throw failure;
+            }
         } catch (Throwable e) {
             if (lease != null) {
                 DisklessClassLoaderRegistry.closeLeaseOnFailure(lease, e);
@@ -77,29 +89,22 @@ public final class DisklessEngines {
             if (e instanceof Error error) {
                 throw error;
             }
-            throw new KafkaException("Failed to initialize diskless engine " + className, e);
+            throw new KafkaException("Failed to create diskless component from " + className, e);
         }
     }
 
-    private static void configure(DisklessEngine engine, Map<String, ?> configs, DisklessEngine.Context context) {
-        Map<String, Object> engineConfig = new HashMap<>();
+    private static Map<String, Object> providerConfig(Map<String, ?> configs) {
+        Map<String, Object> properties = new HashMap<>();
         configs.forEach((key, value) -> {
             if (key.startsWith(CONFIG_PREFIX)) {
-                engineConfig.put(key.substring(CONFIG_PREFIX.length()), value);
+                properties.put(key.substring(CONFIG_PREFIX.length()), value);
             }
         });
-        try {
-            engine.configure(engineConfig);
-            if (context != null) {
-                engine.initialize(context);
-            }
-        } catch (RuntimeException | Error e) {
-            try {
-                engine.close();
-            } catch (IOException | RuntimeException | Error closeFailure) {
-                e.addSuppressed(closeFailure);
-            }
-            throw e;
-        }
+        return Map.copyOf(properties);
+    }
+
+    @FunctionalInterface
+    private interface ComponentFactory<T> {
+        T create(DisklessStorageProvider provider, Map<String, ?> configs) throws Exception;
     }
 }

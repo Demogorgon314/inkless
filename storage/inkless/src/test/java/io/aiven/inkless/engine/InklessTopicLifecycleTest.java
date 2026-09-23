@@ -50,8 +50,8 @@ class InklessTopicLifecycleTest {
              var lifecycle = new InklessTopicLifecycle(controlPlane)) {
             controlPlane.configure(Map.of());
             Uuid oldId = Uuid.randomUuid();
-            lifecycle.ensureTopic("topic", oldId, 2, Map.of(), 1L).join();
-            lifecycle.ensureTopic("topic", oldId, 2, Map.of(), 1L).join();
+            lifecycle.ensureTopic("topic", oldId, 2).join();
+            lifecycle.ensureTopic("topic", oldId, 2).join();
             // Partition 2 represents a migrating partition, initialized separately from its seal.
             lifecycle.ensurePartitions(Set.of(new PartitionRange(oldId, "topic", 3, 4))).join();
             var offsets = controlPlane.listOffsets(List.of(
@@ -62,7 +62,7 @@ class InklessTopicLifecycleTest {
             lifecycle.deleteTopic("topic", oldId).join();
             lifecycle.deleteTopic("topic", oldId).join();
             Uuid replacementId = Uuid.randomUuid();
-            lifecycle.ensureTopic("topic", replacementId, 1, Map.of(), 2L).join();
+            lifecycle.ensureTopic("topic", replacementId, 1).join();
             lifecycle.deleteTopic("topic", oldId).join();
             var afterRecreation = controlPlane.listOffsets(List.of(latest(oldId, 0), latest(replacementId, 0)));
             assertEquals(List.of(Errors.UNKNOWN_TOPIC_OR_PARTITION, Errors.NONE),
@@ -79,7 +79,7 @@ class InklessTopicLifecycleTest {
         try (var lifecycle = new InklessTopicLifecycle(controlPlane)) {
             Uuid id = Uuid.randomUuid();
             assertSame(failure, assertThrows(CompletionException.class,
-                () -> lifecycle.ensureTopic("topic", id, 1, Map.of(), 1L).join()).getCause());
+                () -> lifecycle.ensureTopic("topic", id, 1).join()).getCause());
             assertSame(failure, assertThrows(CompletionException.class,
                 () -> lifecycle.deleteTopic("topic", id).join()).getCause());
         }

@@ -17,6 +17,7 @@
 
 package kafka.server
 
+import io.aiven.inkless.engine.DisklessEngines
 import io.aiven.inkless.config.InklessConfig
 import java.util
 import java.util.concurrent.TimeUnit
@@ -548,7 +549,7 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
   validateValues()
 
   private def validateValues(): Unit = {
-    if (originals.containsKey("diskless.engine.class.name")) {
+    if (originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       require(disklessStorageSystemEnabled, "diskless.engine.class.name requires diskless.storage.system.enable=true")
       require(!disklessManagedReplicasEnabled,
         "External diskless engines do not support managed replicas, switching, or consolidation")

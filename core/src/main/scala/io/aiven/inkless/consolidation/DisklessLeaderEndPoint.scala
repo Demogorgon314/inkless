@@ -19,7 +19,7 @@
 package io.aiven.inkless.consolidation
 
 import io.aiven.inkless.engine.DisklessEngine.Fetcher
-import io.aiven.inkless.engine.DisklessEngine.OffsetJob
+import kafka.server.DisklessOffsetJob
 import kafka.server.{KafkaConfig, ReplicaManager, ReplicaQuota}
 import kafka.utils.Logging
 import org.apache.kafka.common.errors.{KafkaStorageException, UnknownTopicOrPartitionException}
@@ -60,7 +60,7 @@ import scala.util.Try
 class DisklessLeaderEndPoint(
   brokerEndPoint: BrokerEndPoint,
   fetchHandler: Fetcher,
-  createOffsetJob: () => OffsetJob,
+  createOffsetJob: () => DisklessOffsetJob,
   replicaManager: ReplicaManager,
   brokerConfig: KafkaConfig,
   quota: ReplicaQuota,

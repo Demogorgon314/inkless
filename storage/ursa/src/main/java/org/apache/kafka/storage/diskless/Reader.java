@@ -44,9 +44,7 @@ public interface Reader extends Closeable {
      * @param requests map of partition to list offset request
      * @return future with map of partition to list offset response
      */
-    default CompletableFuture<Map<TopicIdPartition, ListOffsetsPartitionResponse>> listOffsets(
-            Map<TopicIdPartition, ListOffsetsPartitionRequest> requests) {
-        return CompletableFuture.completedFuture(Map.of());
-    }
+    CompletableFuture<Map<TopicIdPartition, ListOffsetsPartitionResponse>> listOffsets(
+            Map<TopicIdPartition, ListOffsetsPartitionRequest> requests);
 
 }

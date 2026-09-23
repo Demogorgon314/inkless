@@ -17,6 +17,7 @@
 package io.aiven.inkless.engine;
 
 import org.apache.kafka.common.TopicIdPartition;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.net.URL;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -48,7 +50,6 @@ import io.aiven.inkless.produce.AppendHandler;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -63,7 +64,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class DisklessEnginesTest {
-    public static DisklessEngine.TieredStorage nativeTieredStorage(ControlPlane controlPlane) {
+    public static TieredStorage nativeTieredStorage(ControlPlane controlPlane) {
         var state = mock(SharedState.class);
         when(state.controlPlane()).thenReturn(controlPlane);
         return new InklessTieredStorage(state, Optional.empty());
@@ -148,7 +149,7 @@ public class DisklessEnginesTest {
     public void tieredStorageCallsUsePluginContextAndRestoreItAfterFailure() throws Exception {
         var original = Thread.currentThread().getContextClassLoader();
         var delegate = mock(DisklessEngine.class);
-        var storage = mock(DisklessEngine.TieredStorage.class);
+        var storage = mock(TieredStorage.class);
         when(delegate.tieredStorage()).thenReturn(Optional.of(storage));
         try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader());
              var engine = DisklessClassLoaderContext.leased(DisklessEngine.class, delegate,
@@ -171,60 +172,81 @@ public class DisklessEnginesTest {
     }
 
     @Test
-    public void selectsNativeEngineWhenUnconfigured() throws IOException {
-        try (var nativeEngine = new TestEngine()) {
-            assertSame(nativeEngine, DisklessEngines.load(Map.of(), () -> nativeEngine));
-        }
+    public void rejectsMissingProviderConfiguration() {
+        assertThrows(ConfigException.class,
+            () -> DisklessEngines.loadBroker(Map.of(), null));
     }
 
     @Test
-    public void loadsProviderWithoutConstructingNativeEngineOrLeakingBrokerConfig() throws IOException {
+    public void loadsProviderWithoutConstructingNativeEngineOrLeakingBrokerConfig() throws Exception {
         var config = Map.of(
-            DisklessEngines.CLASS_NAME_CONFIG, TestEngine.class.getName(),
+            DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName(),
             DisklessEngines.CONFIG_PREFIX + "endpoint", "test-endpoint",
             "unrelated.broker.setting", "private");
-        try (var construction = mockConstruction(TestEngine.class)) {
-            try (var loaded = DisklessEngines.load(config, () -> fail("Native engine must stay uninitialized"))) {
-                verify(construction.constructed().get(0)).configure(Map.of("endpoint", "test-endpoint"));
+        var engine = mock(DisklessEngine.class);
+        try (var construction = mockConstruction(TestProvider.class, (provider, context) ->
+            when(provider.createBrokerEngine(any(), any())).thenReturn(engine))) {
+            try (var loaded = DisklessEngines.loadBroker(config, null)) {
+                verify(construction.constructed().get(0)).createBrokerEngine(Map.of("endpoint", "test-endpoint"), null);
             }
-            verify(construction.constructed().get(0)).close();
+            verify(engine).close();
         }
     }
 
     @Test
-    public void closesFailedProviderAndPreservesBothFailures() {
-        var configureFailure = new IllegalArgumentException("Configuration rejected");
+    public void closesInvalidLifecycleAndPreservesCloseFailure() throws Exception {
+        var lifecycle = mock(DisklessTopicLifecycle.class);
         var closeFailure = new IOException("Close failed");
-        try (var construction = mockConstruction(TestEngine.class, (engine, context) -> {
-            doThrow(configureFailure).when(engine).configure(Map.of());
-            doThrow(closeFailure).when(engine).close();
-        })) {
-            var thrown = assertThrows(IllegalArgumentException.class, () -> DisklessEngines.load(
-                Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestEngine.class.getName()),
-                () -> fail("No fallback on invalid configuration")));
-            assertSame(configureFailure, thrown);
+        doThrow(closeFailure).when(lifecycle).close();
+        try (var construction = mockConstruction(TestProvider.class, (provider, context) ->
+            when(provider.createTopicLifecycle(any())).thenReturn(lifecycle))) {
+            var thrown = assertThrows(IllegalArgumentException.class, () -> DisklessEngines.loadLifecycle(
+                Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName())));
             assertSame(closeFailure, thrown.getSuppressed()[0]);
-            try {
-                verify(construction.constructed().get(0)).close();
-            } catch (IOException e) {
-                fail(e);
-            }
+            verify(lifecycle).close();
+            verify(construction.constructed().get(0), never()).createBrokerEngine(any(), any());
+        }
+    }
+
+    @Test
+    public void controllerServiceRetainsTypeContextAndIndependentOwnership() throws Exception {
+        var original = Thread.currentThread().getContextClassLoader();
+        var lifecycle = mock(DisklessTopicLifecycle.MetadataDriven.class);
+        try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader())) {
+            var wrapped = DisklessClassLoaderContext.leased(DisklessTopicLifecycle.class, lifecycle,
+                DisklessClassLoaderRegistry.acquire(new URL[0], loader));
+            var service = (DisklessTopicLifecycle.MetadataDriven) wrapped;
+            when(lifecycle.listManagedTopics()).thenAnswer(invocation -> {
+                assertSame(loader, Thread.currentThread().getContextClassLoader());
+                return CompletableFuture.completedFuture(List.of());
+            });
+            service.listManagedTopics().join();
+            assertSame(original, Thread.currentThread().getContextClassLoader());
+            wrapped.close();
+            wrapped.close();
+            verify(lifecycle).close();
+        }
+    }
+
+    public static class TestProvider implements DisklessStorageProvider {
+        @Override
+        public DisklessEngine createBrokerEngine(Map<String, ?> configs, DisklessEngine.Context context) {
+            return new TestEngine();
+        }
+
+        @Override
+        public DisklessTopicLifecycle createTopicLifecycle(Map<String, ?> configs) {
+            throw new UnsupportedOperationException("Test must supply controller behavior");
         }
     }
 
     /** Public no-argument provider used by loader and broker routing tests. */
     public static class TestEngine implements DisklessEngine {
-        private Map<String, ?> config;
         private boolean closed;
 
         @Override
-        public void configure(Map<String, ?> configs) {
-            config = Map.copyOf(configs);
-        }
-
-        @Override
         public CompletableFuture<Map<TopicIdPartition, PartitionResponse>> append(
-            Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal) {
+            Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal, DisklessRequestContext requestContext) {
             throw new UnsupportedOperationException("Test must supply append behavior");
         }
 
@@ -235,7 +257,7 @@ public class DisklessEnginesTest {
         }
 
         @Override
-        public OffsetJob createOffsetJob() {
+        public CompletableFuture<Map<TopicIdPartition, ListOffsetsResult>> listOffsets(Map<TopicIdPartition, ListOffsetsSpec> requests) {
             throw new UnsupportedOperationException("Test must supply offset behavior");
         }
 

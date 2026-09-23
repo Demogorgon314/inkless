@@ -19,7 +19,6 @@ package org.apache.kafka.storage.diskless.handlers;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.NotLeaderOrFollowerException;
-import org.apache.kafka.storage.diskless.DisklessFutures;
 import org.apache.kafka.storage.diskless.OxiaServiceUrl;
 
 import org.slf4j.Logger;
@@ -39,6 +38,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import io.aiven.inkless.engine.DisklessFutures;
 import io.lakestream.api.Log;
 import io.lakestream.api.Partitioning;
 import io.lakestream.api.PartitioningStrategy;

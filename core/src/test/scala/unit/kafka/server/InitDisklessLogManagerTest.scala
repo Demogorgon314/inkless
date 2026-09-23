@@ -16,7 +16,8 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.DisklessEngine.{TieredStorage, ProducerState}
+import io.aiven.inkless.engine.TieredStorage
+import io.aiven.inkless.engine.TieredStorage.{ProducerState}
 import kafka.cluster.Partition
 import org.apache.kafka.clients.ClientResponse
 import org.apache.kafka.common.{TopicPartition, Uuid}

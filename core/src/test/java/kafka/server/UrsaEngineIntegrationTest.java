@@ -44,12 +44,12 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import io.aiven.inkless.engine.DisklessEngines;
+import io.aiven.inkless.engine.DisklessTopicLifecycle;
 import io.aiven.inkless.test_utils.MinioContainer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 @Timeout(value = 240, unit = TimeUnit.SECONDS)
 public class UrsaEngineIntegrationTest {
@@ -71,7 +71,7 @@ public class UrsaEngineIntegrationTest {
                     .setNumBrokerNodes(2).setNumControllerNodes(1).build())
                     .setConfigProp(ServerConfigs.DISKLESS_STORAGE_SYSTEM_ENABLE_CONFIG, "true")
                     .setConfigProp(DisklessEngines.CLASS_NAME_CONFIG,
-                        "org.apache.kafka.storage.diskless.UrsaDisklessEngine")
+                        "org.apache.kafka.storage.diskless.UrsaStorageProvider")
                     .setConfigProp(DisklessEngines.CLASS_PATH_CONFIG, System.getProperty("ursa.engine.class.path"))
                     .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.catalog.oxia.service.url", oxiaUrl)
                     .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.oxia.service.url", oxiaUrl)
@@ -144,8 +144,8 @@ public class UrsaEngineIntegrationTest {
                     var oldId = admin.describeTopics(List.of(DISKLESS)).allTopicNames()
                         .get(30, TimeUnit.SECONDS).get(DISKLESS).topicId();
                     var providerConfig = cluster.controllers().values().iterator().next().config().originals();
-                    try (var inspection = DisklessEngines.load(providerConfig, () -> fail("Expected external engine"))) {
-                        var lifecycle = inspection.topicLifecycle();
+                    try (var inspection = DisklessEngines.loadLifecycle(providerConfig)) {
+                        var lifecycle = (DisklessTopicLifecycle.MetadataDriven) inspection;
                         TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
                             .stream().anyMatch(topic -> topic.topicId().equals(oldId)),
                             30000, "Controller must reconcile the Ursa catalog");

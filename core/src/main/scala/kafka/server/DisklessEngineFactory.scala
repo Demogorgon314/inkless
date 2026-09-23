@@ -20,36 +20,45 @@ import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.control_plane.ControlPlane
 import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessTopicLifecycle, InklessDisklessEngine, InklessTopicLifecycle}
 import kafka.server.metadata.InklessMetadataView
+import org.apache.kafka.common.config.{ConfigResource, TopicConfig}
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.metadata.KRaftMetadataCache
 import org.apache.kafka.storage.internals.log.LogConfig
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats
 
+import java.lang.{Boolean => JBoolean}
 import java.util.OptionalInt
 import scala.jdk.CollectionConverters._
 import scala.jdk.OptionConverters._
 
 /** Assembles provider-specific resources once; request handlers only receive the engine. */
 object DisklessEngineFactory {
-  final class ControllerStorage(val lifecycle: DisklessTopicLifecycle, closeOwner: () => Unit) extends AutoCloseable {
-    override def close(): Unit = closeOwner()
+  final class ControllerStorage(val lifecycle: DisklessTopicLifecycle) extends AutoCloseable {
+    private val contracts = lifecycle match {
+      case _: DisklessTopicLifecycle.RequestDriven if lifecycle.isInstanceOf[DisklessTopicLifecycle.MetadataDriven] =>
+        throw new IllegalArgumentException("Lifecycle must implement exactly one execution contract")
+      case service: DisklessTopicLifecycle.RequestDriven => (Some(service), None)
+      case service: DisklessTopicLifecycle.MetadataDriven => (None, Some(service))
+      case _ => throw new IllegalArgumentException("Lifecycle must implement an execution contract")
+    }
+    val requestLifecycle: Option[DisklessTopicLifecycle.RequestDriven] = contracts._1
+    val metadataLifecycle: Option[DisklessTopicLifecycle.MetadataDriven] = contracts._2
+
+    override def close(): Unit = lifecycle.close()
   }
 
   def createControllerStorage(config: KafkaConfig, controlPlane: Option[ControlPlane]): Option[ControllerStorage] = {
-    if (config.disklessStorageSystemEnabled && config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
-      val engine = DisklessEngines.load(config.originals, () =>
-        throw new IllegalStateException("Missing diskless engine class"))
-      try Some(new ControllerStorage(engine.topicLifecycle(), () => engine.close()))
+    if (!config.disklessStorageSystemEnabled) return None
+    val lifecycle = if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG))
+      Some(DisklessEngines.loadLifecycle(config.originals))
+    else controlPlane.map(cp => new InklessTopicLifecycle(cp))
+    lifecycle.map { service =>
+      try new ControllerStorage(service)
       catch {
         case failure: Throwable =>
-          try engine.close()
+          try service.close()
           catch { case closeFailure: Throwable => failure.addSuppressed(closeFailure) }
           throw failure
-      }
-    } else {
-      controlPlane.map { cp =>
-        val lifecycle = new InklessTopicLifecycle(cp)
-        new ControllerStorage(lifecycle, () => lifecycle.close())
       }
     }
   }
@@ -61,13 +70,20 @@ object DisklessEngineFactory {
              metrics: BrokerTopicStats,
              defaultLogConfig: () => LogConfig,
              controlPlane: Option[ControlPlane]): Option[DisklessEngine] = {
+    if (!config.disklessStorageSystemEnabled) return None
     if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       val context = new DisklessEngine.Context(time, config.brokerId, metrics, config.extractLogConfigMap,
-        topic => metadata.getTopicId(topic),
         topic => metadata.getTopicConfig(topic).originals.asScala.map { case (k, v) => k -> v.toString }.asJava,
         topic => metadataCache.numPartitions(topic).map(n => OptionalInt.of(n)).orElse(OptionalInt.empty()),
-        () => metadataCache.currentImage().highestOffsetAndEpoch().offset())
-      Some(DisklessEngines.load(config.originals, () => throw new IllegalStateException("Missing engine class"), context))
+        () => metadataCache.currentImage().highestOffsetAndEpoch().offset(),
+        partition => {
+          val image = metadataCache.currentImage()
+          val topic = image.topics().getTopic(partition.topicId())
+          topic != null && topic.name() == partition.topic() && topic.partitions().containsKey(partition.partition()) &&
+            JBoolean.parseBoolean(image.configs().configProperties(
+              new ConfigResource(ConfigResource.Type.TOPIC, topic.name())).getProperty(TopicConfig.DISKLESS_ENABLE_CONFIG))
+        })
+      Some(DisklessEngines.loadBroker(config.originals, context))
     } else {
       controlPlane.map { cp =>
         val state = SharedState.initialize(time, config.brokerId, config.inklessConfig, metadata, cp,

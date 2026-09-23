@@ -19,6 +19,7 @@ package kafka.server
 
 import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.config.InklessConfig
+import io.aiven.inkless.engine.DisklessRequestContext
 import io.aiven.inkless.control_plane.MetadataView
 import kafka.cluster.Partition
 import kafka.coordinator.transaction.{InitProducerIdResult, TransactionCoordinator}
@@ -2460,8 +2461,14 @@ class KafkaApisTest extends Logging {
       any(),
       statsCallback.capture(),
       any(),
+      any(),
       any()
-    )).thenAnswer(_ => {
+    )).thenAnswer(invocation => {
+      val context = invocation.getArgument[Option[DisklessRequestContext]](9).get
+      assertEquals(request.header.clientId(), context.clientId())
+      assertEquals(request.context.listenerName.value(), context.listenerName())
+      assertEquals(brokerId, context.brokerId())
+      assertTrue(context.clientRack().isEmpty)
       statsCallback.getValue.apply(Map(
         tp0 -> new RecordValidationStats(1000L, 5, 100L),
         tp1 -> new RecordValidationStats(2000L, 3, 200L)
@@ -2516,6 +2523,7 @@ class KafkaApisTest extends Logging {
         any(),
         any(),
         responseCallback.capture(),
+        any(),
         any(),
         any(),
         any()
@@ -2912,7 +2920,9 @@ class KafkaApisTest extends Logging {
         responseCallback.capture(),
         any(),
         any(),
-        any())
+        any(),
+        any()
+      )
       ).thenAnswer(_ => responseCallback.getValue.apply(Map(tp -> new PartitionResponse(Errors.NOT_LEADER_OR_FOLLOWER))))
 
       when(replicaManager.getPartitionOrError(tp.topicPartition())).thenAnswer(_ => Right(partition))
@@ -2983,7 +2993,9 @@ class KafkaApisTest extends Logging {
         responseCallback.capture(),
         any(),
         any(),
-        any())
+        any(),
+        any()
+      )
       ).thenAnswer(_ => responseCallback.getValue.apply(Map(tp -> new PartitionResponse(Errors.NOT_LEADER_OR_FOLLOWER))))
 
       when(replicaManager.getPartitionOrError(tp.topicPartition())).thenAnswer(_ => Left(Errors.UNKNOWN_TOPIC_OR_PARTITION))
@@ -3055,7 +3067,9 @@ class KafkaApisTest extends Logging {
         responseCallback.capture(),
         any(),
         any(),
-        any())
+        any(),
+        any()
+      )
       ).thenAnswer(_ => responseCallback.getValue.apply(Map(tp -> new PartitionResponse(Errors.NOT_LEADER_OR_FOLLOWER))))
 
       when(replicaManager.getPartitionOrError(tp.topicPartition)).thenAnswer(_ => Left(Errors.UNKNOWN_TOPIC_OR_PARTITION))
@@ -3134,7 +3148,9 @@ class KafkaApisTest extends Logging {
           any(),
           any(),
           any(),
-          any())
+          any(),
+          any()
+        )
       } finally {
         kafkaApis.close()
       }
@@ -3303,6 +3319,7 @@ class KafkaApisTest extends Logging {
       any(),
       ArgumentMatchers.eq(requestLocal),
       any(),
+      any(),
       any()
     )).thenAnswer(_ => responseCallback.getValue.apply(util.Map.of(new TopicIdPartition(topicId,tp2), new PartitionResponse(Errors.NONE))))
     kafkaApis = createKafkaApis()
@@ -3359,7 +3376,9 @@ class KafkaApisTest extends Logging {
       any(),
       ArgumentMatchers.eq(requestLocal),
       any(),
-      any())
+      any(),
+      any()
+    )
   }
 
   @Test
@@ -3439,6 +3458,7 @@ class KafkaApisTest extends Logging {
       responseCallback.capture(),
       any(),
       ArgumentMatchers.eq(RequestLocal.noCaching),
+      any(),
       any(),
       any()
     )).thenAnswer { _ =>
@@ -3611,7 +3631,8 @@ class KafkaApisTest extends Logging {
       any(),
       ArgumentMatchers.eq(RequestLocal.noCaching),
       any(),
-      ArgumentMatchers.eq(transactionVersion)
+      ArgumentMatchers.eq(transactionVersion),
+      any()
     )).thenAnswer { _ =>
       // Simulate epoch validation failure by calling callback with INVALID_PRODUCER_EPOCH error
       val topicIdPartition = new TopicIdPartition(topicId, topicPartition)
@@ -3653,7 +3674,8 @@ class KafkaApisTest extends Logging {
       any(),
       ArgumentMatchers.eq(RequestLocal.noCaching),
       any(),
-      ArgumentMatchers.eq(transactionVersion)
+      ArgumentMatchers.eq(transactionVersion),
+      any()
     )
   }
 

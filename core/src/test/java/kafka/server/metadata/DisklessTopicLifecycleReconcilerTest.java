@@ -87,7 +87,7 @@ class DisklessTopicLifecycleReconcilerTest {
     private static final long OPERATION_TIMEOUT_MS = 30_000L;
     private static final int MAX_CONCURRENT_OPERATIONS = 16;
 
-    private final DisklessTopicLifecycle lifecycle = mock(DisklessTopicLifecycle.class);
+    private final DisklessTopicLifecycle.MetadataDriven lifecycle = mock(DisklessTopicLifecycle.MetadataDriven.class);
     @SuppressWarnings("unchecked")
     private final BiConsumer<String, Throwable> faultHandler = mock(BiConsumer.class);
     private final List<DisklessTopicLifecycleReconciler> reconcilers = new ArrayList<>();
@@ -97,12 +97,10 @@ class DisklessTopicLifecycleReconcilerTest {
 
     @BeforeEach
     void setUp() {
-        when(lifecycle.executionMode()).thenReturn(DisklessTopicLifecycle.ExecutionMode.METADATA_DRIVEN);
         when(lifecycle.ensureTopic(any(), any(), anyInt(), anyMap(), anyLong())).thenReturn(completedFuture(null));
         when(lifecycle.deleteTopic(any(), any())).thenReturn(completedFuture(null));
         when(lifecycle.sweepOrphans(anySet(), anyLong())).thenReturn(completedFuture(null));
         reconciler = newReconciler(SWEEP_INTERVAL_MS, MAX_CONCURRENT_OPERATIONS);
-        verify(lifecycle).executionMode();
     }
 
     @AfterEach
@@ -112,10 +110,9 @@ class DisklessTopicLifecycleReconcilerTest {
     }
 
     @Test
-    void rejectsRequestDrivenLifecycle() {
-        when(lifecycle.executionMode()).thenReturn(DisklessTopicLifecycle.ExecutionMode.REQUEST_DRIVEN);
+    void rejectsInvalidConcurrencyLimit() {
         assertThrows(IllegalArgumentException.class,
-            () -> newReconciler(SWEEP_INTERVAL_MS, MAX_CONCURRENT_OPERATIONS));
+            () -> newReconciler(SWEEP_INTERVAL_MS, 0));
     }
 
     @Test

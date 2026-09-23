@@ -62,7 +62,7 @@ import io.oxia.client.api.options.PutOption;
  * active controller only cancels a timed-out operation best effort, so a retry can run while the
  * attempt it replaces is still in flight.
  */
-public final class UrsaDisklessTopicLifecycle implements DisklessTopicLifecycle {
+public final class UrsaDisklessTopicLifecycle implements DisklessTopicLifecycle.MetadataDriven {
 
     private static final Logger log = LoggerFactory.getLogger(UrsaDisklessTopicLifecycle.class);
     /** The deleted-topic fence is a marker: only its existence is read. */
@@ -96,11 +96,6 @@ public final class UrsaDisklessTopicLifecycle implements DisklessTopicLifecycle 
         this.catalog = Objects.requireNonNull(catalog, "catalog must not be null");
         this.producerStateClient =
                 Objects.requireNonNull(producerStateClient, "producerStateClient must not be null");
-    }
-
-    @Override
-    public ExecutionMode executionMode() {
-        return ExecutionMode.METADATA_DRIVEN;
     }
 
     @Override

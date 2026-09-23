@@ -21,7 +21,6 @@ import org.apache.kafka.common.errors.NotLeaderOrFollowerException;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.record.internal.RecordBatch;
 import org.apache.kafka.storage.diskless.DisklessClientZone;
-import org.apache.kafka.storage.diskless.DisklessFutures;
 import org.apache.kafka.storage.diskless.LogEntryUtils;
 import org.apache.kafka.storage.diskless.handlers.KafkaRecordsPayload;
 
@@ -50,6 +49,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import io.aiven.inkless.engine.DisklessFutures;
 import io.lakestream.api.Log;
 import io.lakestream.api.LogCursor;
 import io.lakestream.api.LogEntry;

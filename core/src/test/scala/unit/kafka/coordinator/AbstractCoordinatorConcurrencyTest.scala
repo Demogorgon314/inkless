@@ -17,6 +17,8 @@
 
 package kafka.coordinator
 
+import io.aiven.inkless.engine.DisklessRequestContext
+
 import java.util.concurrent.{ConcurrentHashMap, ExecutorService, Executors}
 import java.util.{Collections, Random}
 import java.util.concurrent.atomic.AtomicInteger
@@ -220,7 +222,8 @@ object AbstractCoordinatorConcurrencyTest {
                                processingStatsCallback: Map[TopicIdPartition, RecordValidationStats] => Unit = _ => (),
                                requestLocal: RequestLocal = RequestLocal.noCaching,
                                verificationGuards: Map[TopicPartition, VerificationGuard] = Map.empty,
-                               transactionVersion: Short = TransactionVersion.TV_UNKNOWN): Unit = {
+                               transactionVersion: Short = TransactionVersion.TV_UNKNOWN,
+                               disklessRequestContext: Option[DisklessRequestContext] = None): Unit = {
 
       if (entriesPerPartition.isEmpty)
         return

@@ -19,7 +19,7 @@
 package io.aiven.inkless.consolidation
 
 import io.aiven.inkless.engine.DisklessEngine.Fetcher
-import io.aiven.inkless.engine.DisklessEngine.OffsetJob
+import kafka.server.DisklessOffsetJob
 import kafka.server.{AbstractFetcherManager, KafkaConfig, ReplicaManager, ReplicationQuotaManager}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.utils.LogContext
@@ -32,7 +32,7 @@ class ConsolidationFetcherManager(brokerConfig: KafkaConfig,
                                   replicaManager: ReplicaManager,
                                   quotaManager: ReplicationQuotaManager,
                                   fetchHandler: Fetcher,
-                                  createOffsetJob: () => OffsetJob,
+                                  createOffsetJob: () => DisklessOffsetJob,
                                   consolidationMetrics: Option[ConsolidationMetrics] = None)
   extends AbstractFetcherManager[ConsolidationFetcherThread](name = "ConsolidationFetcherManager on broker " + brokerConfig.brokerId,
     clientId = "Consolidation",

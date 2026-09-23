@@ -17,6 +17,7 @@
 
 package kafka.server
 
+import io.aiven.inkless.engine.DisklessRequestContext
 import io.aiven.inkless.control_plane.MetadataView
 import io.aiven.inkless.metadata.InklessTopicMetadataTransformer
 import kafka.coordinator.transaction.{InitProducerIdResult, TransactionCoordinator}
@@ -564,7 +565,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         responseCallback = sendResponseCallback,
         recordValidationStatsCallback = processingStatsCallback,
         requestLocal = requestLocal,
-        transactionSupportedOperation = transactionSupportedOperation)
+        transactionSupportedOperation = transactionSupportedOperation,
+        disklessRequestContext = Some(new DisklessRequestContext(
+          request.header.clientId(), Optional.empty(), request.context.listenerName.value(), config.brokerId)))
 
       // if the request is put into the purgatory, it will have a held reference and hence cannot be garbage collected;
       // hence we clear its data here in order to let GC reclaim its memory since it is already appended to log

@@ -57,7 +57,6 @@ import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.ListOffsetsResponse;
 import io.aiven.inkless.control_plane.MetadataView;
-import io.aiven.inkless.engine.DisklessEngine;
 
 import static org.apache.kafka.common.requests.ListOffsetsRequest.EARLIEST_TIMESTAMP;
 
@@ -99,7 +98,7 @@ public class FetchOffsetHandler implements Closeable {
         metrics.close();
     }
 
-    public static class Job implements DisklessEngine.OffsetJob {
+    public static class Job {
         private static final Logger LOGGER = LoggerFactory.getLogger(Job.class);
 
         private final MetadataView metadata;
@@ -146,7 +145,6 @@ public class FetchOffsetHandler implements Closeable {
         }
 
         public void start() {
-            this.startTime = TimeUtils.durationMeasurementNow(time);
 
             if (requests.isEmpty()) {
                 return;
@@ -171,6 +169,12 @@ public class FetchOffsetHandler implements Closeable {
                 }
                 return;
             }
+            start(requestsEnriched);
+        }
+
+        /** Uses identities already resolved by the broker, including across topic recreation. */
+        public void start(Map<TopicIdPartition, ListOffsetsRequestData.ListOffsetsPartition> requestsEnriched) {
+            this.startTime = TimeUtils.durationMeasurementNow(time);
             final Future<?> submitted = executor.submit(() -> queryControlPlane(requestsEnriched));
             cancelHandler.handle((_ignored, e) -> {
                 if (e instanceof CancellationException) {

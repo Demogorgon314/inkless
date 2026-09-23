@@ -18,7 +18,9 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.{ConcatenatedRecords, FetchOffsetHandler}
+import java.util.function.Supplier
+import io.aiven.inkless.consume.ConcatenatedRecords
+import kafka.server.DisklessOffsetJob
 import io.aiven.inkless.engine.DisklessEngine.{Fetcher}
 import kafka.cluster.Partition
 import kafka.server.{KafkaConfig, QuotaFactory, ReplicaManager, ReplicaQuota, ReplicationQuotaManager}
@@ -105,7 +107,7 @@ class DisklessLeaderEndPointTest {
 
   private def newEndPoint(
     fetchHandler: Fetcher,
-    fetchOffsetHandler: FetchOffsetHandler,
+    offsetJobs: Supplier[DisklessOffsetJob],
     replicaManager: ReplicaManager,
     quota: ReplicaQuota = QuotaFactory.UNBOUNDED_QUOTA,
     metadataVersion: MetadataVersion = MetadataVersion.LATEST_PRODUCTION,
@@ -114,7 +116,7 @@ class DisklessLeaderEndPointTest {
     new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      () => fetchOffsetHandler.createJob(),
+      () => offsetJobs.get(),
       replicaManager,
       kafkaConfig,
       quota,
@@ -150,7 +152,7 @@ class DisklessLeaderEndPointTest {
     remoteLogEnabled: Boolean
   ): DisklessLeaderEndPoint = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -173,7 +175,7 @@ class DisklessLeaderEndPointTest {
       false
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
-    newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    newEndPoint(fetchHandler, offsetJobs, replicaManager)
   }
 
   /**
@@ -185,7 +187,7 @@ class DisklessLeaderEndPointTest {
     replicaManager: ReplicaManager
   ): DisklessLeaderEndPoint = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
     when(partition.localLogOrException).thenReturn(localLog)
@@ -206,18 +208,18 @@ class DisklessLeaderEndPointTest {
       false
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
-    newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    newEndPoint(fetchHandler, offsetJobs, replicaManager)
   }
 
   @Test
   def testBuildFetchProducesReplicaFetch(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val log = unifiedLogMock(logStartOffset = 11L, segmentSize = Int.MaxValue, maxMessageSize = 1024 * 1024)
     when(replicaManager.localLogOrException(topicPartition)).thenReturn(log)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       99L,
@@ -239,7 +241,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchMapsFetchHandlerResponseToPartitionData(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -262,7 +264,7 @@ class DisklessLeaderEndPointTest {
     val responseMap = Map(topicIdPartition -> fetchData).asJava
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(responseMap))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -282,7 +284,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchUsesInvalidLastStableOffsetWhenOptionalEmpty(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -303,7 +305,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -371,15 +373,15 @@ class DisklessLeaderEndPointTest {
 
   private def verifyListOffsetTimestamp(expectedTimestamp: Long, invoke: DisklessLeaderEndPoint => OffsetAndEpoch): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.empty(),
       Optional.of(new TimestampAndOffset(0L, 10L, Optional.of(5)))
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
     doNothing().when(job).start()
@@ -389,7 +391,7 @@ class DisklessLeaderEndPointTest {
     when(replicaManager.disklessLeaderEpoch(topicPartition))
       .thenReturn(org.apache.kafka.metadata.PartitionRegistration.NO_DISKLESS_LEADER_EPOCH)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val result = invoke(endPoint)
 
     assertEquals(new OffsetAndEpoch(10L, 5), result)
@@ -409,22 +411,22 @@ class DisklessLeaderEndPointTest {
    */
   private def listOffsetEndPointWithPlaceholderEpoch(offset: Long, seal: Long, disklessLeaderEpoch: Int): DisklessLeaderEndPoint = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.empty(),
       Optional.of(new TimestampAndOffset(0L, offset, Optional.of(Int.box(LeaderAndIsr.INITIAL_LEADER_EPOCH))))
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
     doNothing().when(job).start()
     when(replicaManager.classicToDisklessStartOffset(topicPartition)).thenReturn(seal)
     when(replicaManager.disklessLeaderEpoch(topicPartition)).thenReturn(disklessLeaderEpoch)
 
-    newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    newEndPoint(fetchHandler, offsetJobs, replicaManager)
   }
 
   @Test
@@ -461,14 +463,14 @@ class DisklessLeaderEndPointTest {
   @Test
   def testListDisklessOffsetThrowsWhenTopicNotDiskless(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(false)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     assertThrows(
       classOf[UnknownTopicOrPartitionException],
       () => endPoint.fetchLatestOffset(topicPartition, 0)
@@ -478,19 +480,19 @@ class DisklessLeaderEndPointTest {
   @Test
   def testListDisklessOffsetPropagatesHolderException(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.of(new UnknownTopicOrPartitionException("missing")),
       Optional.empty()
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     assertThrows(
       classOf[UnknownTopicOrPartitionException],
       () => endPoint.fetchEarliestOffset(topicPartition, 0)
@@ -500,9 +502,9 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsReturnsEmptyForEmptyInput(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
 
     assertTrue(endPoint.fetchEpochEndOffsets(util.Map.of()).isEmpty)
   }
@@ -510,13 +512,13 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsUndefinedEpoch(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    val job = mock(classOf[DisklessOffsetJob])
+    when(offsetJobs.get()).thenReturn(job)
     doNothing().when(job).start()
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
 
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
@@ -536,14 +538,14 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsUnknownTopicPartition(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(false)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
         topicPartition,
@@ -562,19 +564,19 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsSuccess(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.empty(),
       Optional.of(new TimestampAndOffset(0L, 100L, Optional.of(2)))
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val leaderEpoch = 9
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
@@ -596,18 +598,18 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsBelowDisklessEpochReturnsSeal(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     doNothing().when(job).start()
     // Switched partition: classic prefix ends at the seal (100), diskless region carries epoch 5.
     when(replicaManager.classicToDisklessStartOffset(topicPartition)).thenReturn(100L)
     when(replicaManager.disklessLeaderEpoch(topicPartition)).thenReturn(5)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     // A classic-prefix epoch (3 < 5) must resolve to the seal, without a diskless list-offsets call.
     val queriedEpoch = 3
     val result = endPoint.fetchEpochEndOffsets(
@@ -631,21 +633,21 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsAtOrAboveDisklessEpochReturnsDisklessLeo(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.empty(),
       Optional.of(new TimestampAndOffset(0L, 250L, Optional.of(5)))
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
     when(replicaManager.classicToDisklessStartOffset(topicPartition)).thenReturn(100L)
     when(replicaManager.disklessLeaderEpoch(topicPartition)).thenReturn(5)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     // The diskless epoch itself (5 >= 5) resolves to the current diskless LEO.
     val queriedEpoch = 5
     val result = endPoint.fetchEpochEndOffsets(
@@ -668,21 +670,21 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsDisklessLeoBelowSealUsesSeal(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.empty(),
       Optional.of(new TimestampAndOffset(0L, 0L, Optional.of(5)))
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
     when(replicaManager.classicToDisklessStartOffset(topicPartition)).thenReturn(100L)
     when(replicaManager.disklessLeaderEpoch(topicPartition)).thenReturn(5)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val queriedEpoch = 5
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
@@ -704,15 +706,15 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsBornDisklessReturnsDisklessLeo(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.empty(),
       Optional.of(new TimestampAndOffset(0L, 42L, Optional.of(0)))
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
     // Born-diskless / never switched: no classic seal and no captured diskless epoch.
@@ -721,7 +723,7 @@ class DisklessLeaderEndPointTest {
     when(replicaManager.disklessLeaderEpoch(topicPartition))
       .thenReturn(org.apache.kafka.metadata.PartitionRegistration.NO_DISKLESS_LEADER_EPOCH)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
         topicPartition,
@@ -738,19 +740,19 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsHolderException(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val holder = new FileRecordsOrError(
       Optional.of(new KafkaStorageException("offline")),
       Optional.empty()
     )
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(CompletableFuture.completedFuture(holder))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
         topicPartition,
@@ -766,17 +768,17 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchEpochEndOffsetsFutureGetThrows(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
-    val job = mock(classOf[FetchOffsetHandler.Job])
+    val job = mock(classOf[DisklessOffsetJob])
 
     val failed = new CompletableFuture[FileRecordsOrError]()
     failed.completeExceptionally(new RuntimeException("boom"))
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     when(job.add(eqTo(topicPartition), any())).thenReturn(failed)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val result = endPoint.fetchEpochEndOffsets(
       util.Map.of(
         topicPartition,
@@ -792,12 +794,12 @@ class DisklessLeaderEndPointTest {
   @Test
   def testBuildFetchReturnsEmptyWhenQuotaExceeded(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val quota = mock(classOf[ReplicaQuota])
     when(quota.isQuotaExceeded).thenReturn(true)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager, quota = quota)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager, quota = quota)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       0L,
@@ -816,11 +818,11 @@ class DisklessLeaderEndPointTest {
   @Test
   def testBuildFetchMarksPartitionWithKafkaStorageException(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     when(replicaManager.localLogOrException(topicPartition)).thenThrow(new KafkaStorageException("bad log"))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       0L,
@@ -839,11 +841,11 @@ class DisklessLeaderEndPointTest {
   @Test
   def testBuildFetchMarksPartitionWithUnknownTopicOrPartitionException(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     when(replicaManager.localLogOrException(topicPartition)).thenThrow(new UnknownTopicOrPartitionException("deleted"))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       0L,
@@ -862,7 +864,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testBuildFetchSkipsPartitionWhenFollowerShouldThrottle(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val log = unifiedLogMock(logStartOffset = 0L, segmentSize = Int.MaxValue, maxMessageSize = 1024 * 1024)
     when(replicaManager.localLogOrException(topicPartition)).thenReturn(log)
@@ -871,7 +873,7 @@ class DisklessLeaderEndPointTest {
     when(quota.isQuotaExceeded).thenReturn(false, true)
     when(quota.isThrottled(topicPartition)).thenReturn(true)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager, quota = quota)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager, quota = quota)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       0L,
@@ -894,7 +896,7 @@ class DisklessLeaderEndPointTest {
     // requestedOffset=-1 < logStartOffset=0), no redirect fires and logStartOffset is taken from
     // the local log (0L), not UNKNOWN_OFFSET.
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -915,7 +917,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -932,7 +934,7 @@ class DisklessLeaderEndPointTest {
     // For offsets in [localLogStart, disklessStart) this means the data was already tiered --
     // the endpoint must redirect just as it does for the NONE+empty-batch case.
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -957,7 +959,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
 
     // Offset 50 is in [0, 100) -- within the consolidated prefix pruned to remote.
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 50L)).get(topicPartition)
@@ -969,7 +971,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchOverlaysPartitionErrorAndUnknownLogStartWhenLookupFailsAndDisklessWasOk(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     when(replicaManager.getPartitionOrError(topicPartition)).thenReturn(Left(Errors.NOT_LEADER_OR_FOLLOWER))
 
@@ -986,7 +988,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -999,7 +1001,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchKeepsDisklessErrorWhenLookupFailsButDisklessAlreadyFailed(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     when(replicaManager.getPartitionOrError(topicPartition)).thenReturn(Left(Errors.KAFKA_STORAGE_ERROR))
 
@@ -1016,7 +1018,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -1029,7 +1031,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchSetsUnknownServerErrorAndUnknownLogStartWhenLocalLogStartAheadOfHighWatermark(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -1050,7 +1052,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -1063,7 +1065,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testFetchSetsUnknownLogStartWhenLocalLogUnavailable(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     when(partition.localLogOrException).thenThrow(new NotLeaderOrFollowerException("no local log"))
@@ -1082,7 +1084,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, 0L, 0L, 1024 * 1024, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000)
@@ -1232,7 +1234,7 @@ class DisklessLeaderEndPointTest {
         replicaManager,
         mock(classOf[ReplicationQuotaManager]),
         mock(classOf[Fetcher]),
-        () => mock(classOf[FetchOffsetHandler.Job]),
+        () => mock(classOf[DisklessOffsetJob]),
         Some(metrics)
       )
       try {
@@ -1289,7 +1291,7 @@ class DisklessLeaderEndPointTest {
         replicaManager,
         mock(classOf[ReplicationQuotaManager]),
         mock(classOf[Fetcher]),
-        () => mock(classOf[FetchOffsetHandler.Job]),
+        () => mock(classOf[DisklessOffsetJob]),
         Some(metrics)
       )
       try {
@@ -1325,7 +1327,7 @@ class DisklessLeaderEndPointTest {
     // for offset 199 and retry indefinitely.
     val replicaManager = replicaManagerMock()
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
     when(partition.localLogOrException).thenReturn(localLog)
@@ -1350,7 +1352,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 0L)).get(topicPartition)
 
     assertEquals(Errors.OFFSET_OUT_OF_RANGE.code, pd.errorCode)
@@ -1394,7 +1396,7 @@ class DisklessLeaderEndPointTest {
     // read of the surviving remote prefix [200, 400) redirects to tiered storage instead of being
     // rejected as out-of-range, and (b) the tier-state rebuild restarts the log at 200, not the seal.
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -1419,7 +1421,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 200L)).get(topicPartition)
 
     assertEquals(Errors.OFFSET_MOVED_TO_TIERED_STORAGE.code, pd.errorCode)
@@ -1432,7 +1434,7 @@ class DisklessLeaderEndPointTest {
     // log start (400), keep the lower local value so we never advance the whole-log start past data the
     // local log still holds (the safe, over-serve direction).
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -1457,7 +1459,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 450L)).get(topicPartition)
 
     assertEquals(Errors.OFFSET_MOVED_TO_TIERED_STORAGE.code, pd.errorCode)
@@ -1474,7 +1476,7 @@ class DisklessLeaderEndPointTest {
     // tiered storage: the surviving prefix is effectively invisible. This pins the transient reversion to
     // the pre-fix seal-based behavior that the empty fallback implies, so the risk is visible rather than silent.
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -1497,7 +1499,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 200L)).get(topicPartition)
 
     assertEquals(Errors.NONE.code, pd.errorCode)
@@ -1529,7 +1531,7 @@ class DisklessLeaderEndPointTest {
     // WAL starts at 100 and remote storage holds the [0, 100) prefix, so the round trip must surface
     // OFFSET_MOVED_TO_TIERED_STORAGE for offset 0.
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = unifiedLogMock(logStartOffset = 0L, segmentSize = Int.MaxValue, maxMessageSize = 1024 * 1024)
@@ -1555,7 +1557,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       0L,
@@ -1576,7 +1578,7 @@ class DisklessLeaderEndPointTest {
   @Test
   def testConsolidationFetchConfigsAreUsed(): Unit = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val log = unifiedLogMock(logStartOffset = 0L, segmentSize = 2 * 1024 * 1024, maxMessageSize = 1024 * 1024)
     when(replicaManager.localLogOrException(topicPartition)).thenReturn(log)
@@ -1591,7 +1593,7 @@ class DisklessLeaderEndPointTest {
     val endPoint = new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      () => fetchOffsetHandler.createJob(),
+      () => offsetJobs.get(),
       replicaManager,
       config,
       QuotaFactory.UNBOUNDED_QUOTA,
@@ -1625,7 +1627,7 @@ class DisklessLeaderEndPointTest {
     val segmentBytes = 4096
     val maxMessageBytes = 512
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     // findBatches returns whole batches, so it may exceed the request maxBytes by one batch.
     // Follower append still requires the full returned records block to fit in one segment.
@@ -1638,7 +1640,7 @@ class DisklessLeaderEndPointTest {
     val endPoint = new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      () => fetchOffsetHandler.createJob(),
+      () => offsetJobs.get(),
       replicaManager,
       config,
       QuotaFactory.UNBOUNDED_QUOTA,
@@ -1672,12 +1674,12 @@ class DisklessLeaderEndPointTest {
     val segmentBytes = 1024 * 1024
     val maxMessageBytes = segmentBytes + 12
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val log = unifiedLogMock(logStartOffset = 0L, segmentSize = segmentBytes, maxMessageSize = maxMessageBytes)
     when(replicaManager.localLogOrException(topicPartition)).thenReturn(log)
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId),
       0L,
@@ -1741,7 +1743,7 @@ class DisklessLeaderEndPointTest {
    */
   private def fetchClampedRecords(records: Records, fetchOffset: Long, maxBytes: Int): Records = {
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val partition = mock(classOf[Partition])
     val localLog = mock(classOf[UnifiedLog])
@@ -1762,7 +1764,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
     partitionData.put(topicPartition, new FetchRequest.PartitionData(topicId, fetchOffset, 0L, maxBytes, Optional.of(Int.box(0))))
     val fetchBuilder = FetchRequest.Builder.forReplica(12, 1, 1L, 100, 1, partitionData).setMaxBytes(100_000_000)
@@ -1846,7 +1848,7 @@ class DisklessLeaderEndPointTest {
     val maxMessageBytes = 1024
 
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
     val replicaManager = replicaManagerMock()
     val log = unifiedLogMock(logStartOffset = 0L, segmentSize = segmentBytes, maxMessageSize = maxMessageBytes)
     when(replicaManager.localLogOrException(topicPartition)).thenReturn(log)
@@ -1867,7 +1869,7 @@ class DisklessLeaderEndPointTest {
     )
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
-    val endPoint = newEndPoint(fetchHandler, fetchOffsetHandler, replicaManager)
+    val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
       Optional.of(topicId), 0L, Optional.empty(), 4, ReplicaState.FETCHING, Optional.empty()
     )

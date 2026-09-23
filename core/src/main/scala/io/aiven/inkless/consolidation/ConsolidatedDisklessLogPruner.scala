@@ -18,7 +18,7 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.engine.DisklessEngine.TieredStorage
+import io.aiven.inkless.engine.TieredStorage
 import org.apache.kafka.common.protocol.Errors
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager

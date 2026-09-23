@@ -145,17 +145,15 @@ class ReplicaManagerInklessTest {
     val fetchResult = util.Map.of(disklessTopicPartition, new FetchPartitionData(
       Errors.NONE, 123L, 0L, RECORDS, Optional.empty(), OptionalLong.empty(),
       Optional.empty(), OptionalInt.empty(), false))
-    val offsetJob = mock(classOf[DisklessEngine.OffsetJob])
-    when(offsetJob.mustHandle(disklessTopicPartition.topic())).thenReturn(true)
-    when(offsetJob.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    when(offsetJob.add(any(), any())).thenReturn(CompletableFuture.completedFuture(
-      new OffsetResultHolder.FileRecordsOrError(Optional.empty(),
-        Optional.of(new FileRecords.TimestampAndOffset(0L, 123L, Optional.of[Integer](0))))))
+    val offsetResult = util.Map.of(disklessTopicPartition,
+      new DisklessEngine.ListOffsetsResult(Errors.NONE, 0L, 123L, Optional.of[Integer](0)))
+    val deleter = mock(classOf[DisklessEngine.RecordDeleter])
     val initializer: MockedConstruction.MockInitializer[TestDisklessEngine] = {
       case (engine, _) =>
-        when(engine.append(any(), any())).thenReturn(CompletableFuture.completedFuture(appendResult))
+        when(engine.recordDeleter()).thenReturn(Optional.of(deleter))
+        when(engine.append(any(), any(), any())).thenReturn(CompletableFuture.completedFuture(appendResult))
         when(engine.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(fetchResult))
-        when(engine.createOffsetJob()).thenReturn(offsetJob)
+        when(engine.listOffsets(any())).thenReturn(CompletableFuture.completedFuture(offsetResult))
     }
     val pluginConstructor = mockConstruction(classOf[TestDisklessEngine], initializer)
     val appendConstructor = mockConstruction(classOf[AppendHandler])
@@ -163,7 +161,7 @@ class ReplicaManagerInklessTest {
     val offsetConstructor = mockConstruction(classOf[FetchOffsetHandler])
     try {
       val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
-        engineClassName = Some(classOf[TestDisklessEngine].getName))
+        engineClassName = Some(classOf[io.aiven.inkless.engine.DisklessEnginesTest.TestProvider].getName))
       val engine = pluginConstructor.constructed().get(0)
       try {
         val callback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -189,17 +187,16 @@ class ReplicaManagerInklessTest {
           responseCallback = result => offsets = result)
         assertNotNull(offsets)
         assertEquals(123L, offsets.iterator().next().partitions().get(0).offset())
-        verify(offsetJob).start()
+        verify(engine).listOffsets(any())
 
-        when(engine.supportsDeleteRecords()).thenReturn(true)
-        when(engine.deleteRecords(any())).thenReturn(
+        when(deleter.deleteRecords(any())).thenReturn(
           CompletableFuture.failedFuture(new KafkaStorageException("Storage unavailable")))
         var deleteResponse: Map[TopicPartition, DeleteRecordsPartitionResult] = Map.empty
         replicaManager.deleteRecords(0L, Map(disklessTopicPartition.topicPartition() -> 10L),
           response => deleteResponse = response)
         assertEquals(Errors.KAFKA_STORAGE_ERROR.code(),
           deleteResponse(disklessTopicPartition.topicPartition()).errorCode())
-        verify(engine).deleteRecords(util.Map.of(disklessTopicPartition.topicPartition(), java.lang.Long.valueOf(10L)))
+        verify(deleter).deleteRecords(util.Map.of(disklessTopicPartition.topicPartition(), java.lang.Long.valueOf(10L)))
         assertTrue(appendConstructor.constructed().isEmpty)
         assertTrue(fetchConstructor.constructed().isEmpty)
         assertTrue(offsetConstructor.constructed().isEmpty)
@@ -4828,7 +4825,7 @@ class ReplicaManagerInklessTest {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(errorResult))
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -4871,7 +4868,7 @@ class ReplicaManagerInklessTest {
   def testLastOffsetForLeaderEpochSwitchPendingUsesLocalLog(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -4905,7 +4902,7 @@ class ReplicaManagerInklessTest {
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(101L, partitionResult.endOffset())
       verify(jobMock, never()).add(any(), any())
-      verify(jobMock, never()).start()
+      verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -4915,7 +4912,7 @@ class ReplicaManagerInklessTest {
   def testLastOffsetForLeaderEpochHybridAtSwitchBoundaryUsesLocalLog(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -4949,7 +4946,7 @@ class ReplicaManagerInklessTest {
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(101L, partitionResult.endOffset())
       verify(jobMock, never()).add(any(), any())
-      verify(jobMock, never()).start()
+      verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -4959,7 +4956,7 @@ class ReplicaManagerInklessTest {
   def testLastOffsetForLeaderEpochHybridAtSwitchBoundaryUsesFollowerLocalLog(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5005,7 +5002,7 @@ class ReplicaManagerInklessTest {
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(101L, partitionResult.endOffset())
       verify(jobMock, never()).add(any(), any())
-      verify(jobMock, never()).start()
+      verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5015,7 +5012,7 @@ class ReplicaManagerInklessTest {
   def testLastOffsetForLeaderEpochHybridAtSwitchBoundaryRejectsLaggingFollowerLocalLog(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5060,7 +5057,7 @@ class ReplicaManagerInklessTest {
       val partitionResult = result.head.partitions().get(0)
       assertEquals(Errors.NOT_LEADER_OR_FOLLOWER.code, partitionResult.errorCode())
       verify(jobMock, never()).add(any(), any())
-      verify(jobMock, never()).start()
+      verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5074,7 +5071,7 @@ class ReplicaManagerInklessTest {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessResult))
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5108,7 +5105,7 @@ class ReplicaManagerInklessTest {
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(200L, partitionResult.endOffset())
       verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
-      verify(jobMock).start()
+      verify(jobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5121,7 +5118,7 @@ class ReplicaManagerInklessTest {
       Optional.of(new FileRecords.TimestampAndOffset(RecordBatch.NO_TIMESTAMP, 200L, Optional.of[Integer](1))))
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessResult))
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5155,7 +5152,7 @@ class ReplicaManagerInklessTest {
       assertEquals(Errors.NONE.code, partitionResult.errorCode())
       assertEquals(200L, partitionResult.endOffset())
       verify(jobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
-      verify(jobMock).start()
+      verify(jobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5257,7 +5254,7 @@ class ReplicaManagerInklessTest {
       assertEquals(OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH, partitionResult.leaderEpoch())
       verify(fetchOffsetHandlerMock, never()).createJob()
       verify(jobMock, never()).add(any(), any())
-      verify(jobMock, never()).start()
+      verify(jobMock, never()).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -5267,7 +5264,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetPureDisklessRoutesToDisklessPathWhenNoSwitch(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val taskFuture = new CompletableFuture[OffsetResultHolder.FileRecordsOrError]()
     when(jobMock.add(any[TopicPartition], any[ListOffsetsPartition])).thenReturn(taskFuture)
@@ -5329,7 +5326,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetLatestUsesClassicPathWhenSwitchPending(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5390,7 +5387,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(successResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5439,7 +5436,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetEarliestUsesClassicPathWhenSwitchPending(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5500,7 +5497,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(successResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5555,7 +5552,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(successResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5604,7 +5601,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetEarliestUsesClassicPathWhenSwitchCompleteAndClassicHasData(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5667,7 +5664,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetEarliestLocalAlwaysUsesClassicWhenSwitchComplete(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5722,7 +5719,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetLatestTieredAlwaysUsesClassicWhenSwitchComplete(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5777,7 +5774,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetSpecificTimestampUsesClassicPathOnMatch(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5839,7 +5836,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5895,7 +5892,7 @@ class ReplicaManagerInklessTest {
   def testFetchOffsetSpecificTimestampPropagatesClassicError(): Unit = {
     val jobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(jobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -5971,7 +5968,7 @@ class ReplicaManagerInklessTest {
     when(batchJobMock.mustHandle(any())).thenReturn(true)
     when(batchJobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(batchJobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(batchJobMock).start()
+    doNothing().when(batchJobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6022,7 +6019,7 @@ class ReplicaManagerInklessTest {
     // The diskless fallback was batched into the per-request job rather than into a fresh one;
     // exactly one job (the outer batch) was created and started exactly once.
     verify(batchJobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
-    verify(batchJobMock).start()
+    verify(batchJobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -6044,21 +6041,16 @@ class ReplicaManagerInklessTest {
       Optional.empty(),
       Optional.of(new FileRecords.TimestampAndOffset(456L, 200L, Optional.of[Integer](1))))
 
-    val batchJobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
-    when(batchJobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(batchJobMock).start()
-
     // Fallback job created on demand once the async classic future completes empty.
     val fallbackJobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(fallbackJobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(fallbackJobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(fallbackJobMock).start()
+    doNothing().when(fallbackJobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
-        // First createJob() is the outer batch; second is the diskless fallback created when
-        // the async classic remote future eventually completes empty.
-        when(handlerMock.createJob()).thenReturn(batchJobMock, fallbackJobMock)
+        // Empty broker batches do not create backend work.
+        when(handlerMock.createJob()).thenReturn(fallbackJobMock)
     }
     val fetchOffsetHandlerCtor = mockConstruction(classOf[FetchOffsetHandler], fetchOffsetHandlerCtorInit)
 
@@ -6094,13 +6086,10 @@ class ReplicaManagerInklessTest {
       callback)
 
     // Classic future hasn't completed yet → response is parked in the purgatory and the
-    // fallback hasn't fired. The outer batch job was started; the fallback job has not been
-    // created yet.
+    // fallback hasn't fired. The empty outer broker batch sends no request to the engine.
     assertNull(responseTopics)
-    verify(batchJobMock, never()).add(any(), any())
-    verify(batchJobMock).start()
     verify(fallbackJobMock, never()).add(any(), any())
-    verify(fallbackJobMock, never()).start()
+    verify(fallbackJobMock, never()).start(any())
 
     // Now complete the classic remote future as empty. This drives the fallback chain
     // synchronously on this thread, which creates and starts the fresh fallback job and
@@ -6118,11 +6107,9 @@ class ReplicaManagerInklessTest {
 
     verify(replicaManager).fetchOffsetForTimestamp(
       ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), anyLong(), any(), any(), anyBoolean())
-    // The outer batch job was never used to add a partition because classic returned async.
-    verify(batchJobMock, never()).add(any(), any())
     // The diskless fallback was issued on a fresh job created on demand.
     verify(fallbackJobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
-    verify(fallbackJobMock).start()
+    verify(fallbackJobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -6143,7 +6130,7 @@ class ReplicaManagerInklessTest {
 
     val batchJobMock = Mockito.mock(classOf[FetchOffsetHandler.Job])
     when(batchJobMock.mustHandle(any())).thenReturn(true)
-    doNothing().when(batchJobMock).start()
+    doNothing().when(batchJobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6208,7 +6195,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6275,7 +6262,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6352,7 +6339,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6422,7 +6409,7 @@ class ReplicaManagerInklessTest {
     when(jobMock.mustHandle(any())).thenReturn(true)
     when(jobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(emptyDisklessResult))
     when(jobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(jobMock).start()
+    doNothing().when(jobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6497,7 +6484,7 @@ class ReplicaManagerInklessTest {
     when(batchJobMock.mustHandle(any())).thenReturn(true)
     when(batchJobMock.add(any(), any())).thenReturn(CompletableFuture.completedFuture(disklessSuccess))
     when(batchJobMock.cancelHandler()).thenReturn(new CompletableFuture[Void]())
-    doNothing().when(batchJobMock).start()
+    doNothing().when(batchJobMock).start(any())
 
     val fetchOffsetHandlerCtorInit: MockedConstruction.MockInitializer[FetchOffsetHandler] = {
       case (handlerMock, _) =>
@@ -6550,7 +6537,7 @@ class ReplicaManagerInklessTest {
     assertEquals(200L, partitionResponse.offset())
     assertEquals(456L, partitionResponse.timestamp())
     verify(batchJobMock).add(ArgumentMatchers.eq(disklessTopicPartition.topicPartition()), any())
-    verify(batchJobMock).start()
+    verify(batchJobMock).start(any())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -8825,7 +8812,7 @@ class ReplicaManagerInklessTest {
   private def createReplicaManager(
     disklessTopics: Seq[String],
     controlPlane: Option[ControlPlane] = None,
-    topicIdMapping: Map[String, Uuid] = Map.empty,
+    topicIdMapping: Map[String, Uuid] = Map(disklessTopicPartition.topic() -> disklessTopicPartition.topicId()),
     disklessManagedReplicasEnabled: Boolean = false,
     disklessRemoteStorageConsolidationEnabled: Boolean = false,
     consolidatingDisklessTopics: Set[String] = Set.empty,
@@ -8903,7 +8890,7 @@ class ReplicaManagerInklessTest {
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = alterPartitionManager,
       disklessEngine = if (engineClassName.isDefined) {
-        Some(DisklessEngines.load(config.originals, () => DisklessEngineFactory.nativeEngine(config, sharedState)))
+        Some(DisklessEngines.loadBroker(config.originals, null))
       } else if (inklessSharedStateEnabled) Some(DisklessEngineFactory.nativeEngine(config, sharedState)) else None,
       inklessMetadataView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,

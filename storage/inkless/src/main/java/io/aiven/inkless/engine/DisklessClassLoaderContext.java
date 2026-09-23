@@ -20,11 +20,18 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DisklessClassLoaderContext {
+
+    // Only these engine-owned services cross the boundary. Values and futures are never proxied.
+    private static final Map<String, Class<?>> CAPABILITY_TYPES = Map.of(
+        "tieredStorage", TieredStorage.class,
+        "recordDeleter", DisklessEngine.RecordDeleter.class,
+        "fetchProber", DisklessEngine.FetchProber.class);
 
     private DisklessClassLoaderContext() {
     }
@@ -52,8 +59,21 @@ final class DisklessClassLoaderContext {
         Objects.requireNonNull(lease, "lease must not be null");
         return type.cast(Proxy.newProxyInstance(
                 type.getClassLoader(),
-                new Class<?>[] {type},
+                componentInterfaces(type, delegate),
                 new LeasedHandler(delegate, lease)));
+    }
+
+    private static Class<?>[] componentInterfaces(Class<?> type, Object delegate) {
+        if (type == DisklessTopicLifecycle.class) {
+            boolean requestDriven = delegate instanceof DisklessTopicLifecycle.RequestDriven;
+            boolean metadataDriven = delegate instanceof DisklessTopicLifecycle.MetadataDriven;
+            if (requestDriven == metadataDriven) {
+                throw new IllegalArgumentException("Lifecycle must implement exactly one execution contract");
+            }
+            return new Class<?>[] {requestDriven
+                ? DisklessTopicLifecycle.RequestDriven.class : DisklessTopicLifecycle.MetadataDriven.class};
+        }
+        return new Class<?>[] {type};
     }
 
     private static Object invoke(Method method, Object target, Object[] args) throws Exception {
@@ -110,24 +130,12 @@ final class DisklessClassLoaderContext {
                 }
             }
             Object result = call(lease.classLoader(), () -> DisklessClassLoaderContext.invoke(method, delegate, args));
-            if (result instanceof DisklessEngine.OffsetJob) {
-                return Proxy.newProxyInstance(DisklessEngine.OffsetJob.class.getClassLoader(),
-                    new Class<?>[] {DisklessEngine.OffsetJob.class},
-                    (jobProxy, jobMethod, jobArgs) -> call(lease.classLoader(),
-                        () -> DisklessClassLoaderContext.invoke(jobMethod, result, jobArgs)));
-            }
-            if (result instanceof Optional<?> optional &&
-                optional.orElse(null) instanceof DisklessEngine.TieredStorage storage) {
-                return Optional.of(Proxy.newProxyInstance(DisklessEngine.TieredStorage.class.getClassLoader(),
-                    new Class<?>[] {DisklessEngine.TieredStorage.class},
-                    (storageProxy, storageMethod, storageArgs) -> call(lease.classLoader(),
-                        () -> DisklessClassLoaderContext.invoke(storageMethod, storage, storageArgs))));
-            }
-            if (result instanceof DisklessTopicLifecycle) {
-                return Proxy.newProxyInstance(DisklessTopicLifecycle.class.getClassLoader(),
-                    new Class<?>[] {DisklessTopicLifecycle.class},
-                    (lifecycleProxy, lifecycleMethod, lifecycleArgs) -> call(lease.classLoader(),
-                        () -> DisklessClassLoaderContext.invoke(lifecycleMethod, result, lifecycleArgs)));
+            Class<?> capability = CAPABILITY_TYPES.get(method.getName());
+            if (capability != null && result instanceof Optional<?> optional) {
+                return optional.map(service -> Proxy.newProxyInstance(capability.getClassLoader(),
+                    new Class<?>[] {capability},
+                    (serviceProxy, serviceMethod, serviceArgs) -> call(lease.classLoader(),
+                        () -> DisklessClassLoaderContext.invoke(serviceMethod, service, serviceArgs))));
             }
             return result;
         }

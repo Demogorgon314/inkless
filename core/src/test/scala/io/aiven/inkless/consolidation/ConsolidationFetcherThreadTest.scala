@@ -18,7 +18,9 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.{ConcatenatedRecords, FetchOffsetHandler}
+import java.util.function.Supplier
+import io.aiven.inkless.consume.ConcatenatedRecords
+import kafka.server.DisklessOffsetJob
 import io.aiven.inkless.engine.DisklessEngine.{Fetcher, FetchAvailability}
 import kafka.cluster.Partition
 import kafka.server._
@@ -126,7 +128,7 @@ class ConsolidationFetcherThreadTest {
     val endpoint = new DisklessLeaderEndPoint(
       new BrokerEndPoint(0, "localhost", 9092),
       fetchHandler,
-      () => mock(classOf[FetchOffsetHandler.Job]),
+      () => mock(classOf[DisklessOffsetJob]),
       replicaManager,
       config,
       mock(classOf[ReplicaQuota]),
@@ -341,9 +343,9 @@ class ConsolidationFetcherThreadTest {
 
     // Real diskless leader endpoint backing OffsetsForLeaderEpoch for the consolidating follower.
     val fetchHandler = mock(classOf[Fetcher])
-    val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
-    val job = mock(classOf[FetchOffsetHandler.Job])
-    when(fetchOffsetHandler.createJob()).thenReturn(job)
+    val offsetJobs = mock(classOf[Supplier[DisklessOffsetJob]])
+    val job = mock(classOf[DisklessOffsetJob])
+    when(offsetJobs.get()).thenReturn(job)
     when(job.mustHandle(topicPartition.topic())).thenReturn(true)
     doNothing().when(job).start()
 
@@ -360,7 +362,7 @@ class ConsolidationFetcherThreadTest {
     val endpoint = new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      () => fetchOffsetHandler.createJob(),
+      () => offsetJobs.get(),
       replicaManager,
       config,
       endpointQuota,
@@ -663,7 +665,7 @@ class ConsolidationFetcherThreadTest {
       mock(classOf[ReplicaManager]),
       mock(classOf[ReplicationQuotaManager]),
       mock(classOf[Fetcher]),
-      () => mock(classOf[FetchOffsetHandler.Job]),
+      () => mock(classOf[DisklessOffsetJob]),
       Some(metrics)
     )
     try {

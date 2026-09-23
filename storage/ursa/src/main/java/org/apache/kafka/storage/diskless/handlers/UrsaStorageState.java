@@ -295,15 +295,18 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     }
 
     /**
-     * Publishes the local lifecycle fence for a topic this broker has seen deleted. Nothing else
-     * happens here: the partition logs are closed by the deletion reconciler, and a topic on its
-     * way out has no retention left to enforce.
+     * Fences a deleted topic before retiring its cached handles. Concurrent opens check the fence
+     * under lifecycleLock, so a late open cannot repopulate the deleted incarnation.
      */
     public void fenceDeletedTopic(String topicName, Uuid topicId) {
         if (topicName == null || topicId == null) {
             return;
         }
-        lakestreamStorageHolder.markTopicDeleted(topicId);
+        synchronized (lifecycleLock) {
+            lakestreamStorageHolder.markTopicDeleted(topicId);
+            snapshotTrackedPartitions().stream().filter(partition -> partition.topicId().equals(topicId))
+                .forEach(partition -> cleanupPartition(partition, true));
+        }
     }
 
     /**

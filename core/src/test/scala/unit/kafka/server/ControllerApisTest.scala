@@ -18,7 +18,6 @@
 package kafka.server
 
 import io.aiven.inkless.engine.{DisklessTopicLifecycle, InklessTopicLifecycle}
-import io.aiven.inkless.engine.DisklessTopicLifecycle.ExecutionMode
 import io.aiven.inkless.control_plane.{ControlPlane, CreateTopicAndPartitionsRequest}
 import kafka.network.RequestChannel
 import kafka.server.QuotaFactory.QuotaManagers
@@ -167,7 +166,7 @@ class ControllerApisTest {
                                    props: Properties = new Properties(),
                                    throttle: Boolean = false,
                                    inklessControlPlane: Option[ControlPlane] = None,
-                                   lifecycle: Option[DisklessTopicLifecycle] = None): ControllerApis = {
+                                   lifecycle: Option[DisklessTopicLifecycle.RequestDriven] = None): ControllerApis = {
     props.put(KRaftConfigs.NODE_ID_CONFIG, nodeId: java.lang.Integer)
     props.put(KRaftConfigs.PROCESS_ROLES_CONFIG, "controller")
     props.put(KRaftConfigs.CONTROLLER_LISTENER_NAMES_CONFIG, "CONTROLLER")
@@ -752,11 +751,10 @@ class ControllerApisTest {
     val topicId = Uuid.randomUuid()
     setDisklessTopicImage("foo", topicId, 2)
     val controller = mock(classOf[Controller])
-    val lifecycle = mock(classOf[DisklessTopicLifecycle])
+    val lifecycle = mock(classOf[DisklessTopicLifecycle.RequestDriven])
     val provisioned = new CompletableFuture[Void]()
-    when(lifecycle.executionMode()).thenReturn(ExecutionMode.REQUEST_DRIVEN)
     when(lifecycle.ensureTopic(ArgumentMatchers.eq("foo"), ArgumentMatchers.eq(topicId),
-      ArgumentMatchers.eq(2), any(), anyLong())).thenReturn(provisioned)
+      ArgumentMatchers.eq(2))).thenReturn(provisioned)
     val response = new CreateTopicsResponseData()
     response.topics().add(new CreatableTopicResult().setName("foo").setTopicId(topicId)
       .setNumPartitions(2).setErrorCode(NONE.code())
@@ -769,7 +767,7 @@ class ControllerApisTest {
     val result = controllerApis.createTopics(ANONYMOUS_CONTEXT, request,
       hasClusterAuth = true, _ => Set.empty, _ => Set("foo"))
     if (validateOnly) {
-      verify(lifecycle, never()).ensureTopic(any(), any(), anyInt(), any(), anyLong())
+      verify(lifecycle, never()).ensureTopic(any(), any(), anyInt())
     } else {
       assertFalse(result.isDone)
       provisioned.complete(null)
@@ -874,9 +872,8 @@ class ControllerApisTest {
   def testRequestDrivenDeletionWaitsForStorageBeforeKRaft(failStorage: Boolean): Unit = {
     val topicId = Uuid.randomUuid()
     val controller = spy(new MockController.Builder().newInitialTopic("foo", topicId).build())
-    val lifecycle = mock(classOf[DisklessTopicLifecycle])
+    val lifecycle = mock(classOf[DisklessTopicLifecycle.RequestDriven])
     val deletion = new CompletableFuture[Void]()
-    when(lifecycle.executionMode()).thenReturn(ExecutionMode.REQUEST_DRIVEN)
     when(lifecycle.deleteTopic("foo", topicId)).thenReturn(deletion)
     setDisklessTopicImage("foo", topicId, 1)
     controllerApis = createControllerApis(None, controller, lifecycle = Some(lifecycle))
@@ -900,10 +897,10 @@ class ControllerApisTest {
   def testMetadataDrivenDeletionLeavesStorageToReconciler(): Unit = {
     val topicId = Uuid.randomUuid()
     val controller = new MockController.Builder().newInitialTopic("foo", topicId).build()
-    val lifecycle = mock(classOf[DisklessTopicLifecycle])
-    when(lifecycle.executionMode()).thenReturn(ExecutionMode.METADATA_DRIVEN)
+    val lifecycle = mock(classOf[DisklessTopicLifecycle.MetadataDriven])
+    val storage = new DisklessEngineFactory.ControllerStorage(lifecycle)
     setDisklessTopicImage("foo", topicId, 1)
-    controllerApis = createControllerApis(None, controller, lifecycle = Some(lifecycle))
+    controllerApis = createControllerApis(None, controller, lifecycle = storage.requestLifecycle)
     val result = controllerApis.deleteTopics(ANONYMOUS_CONTEXT,
       new DeleteTopicsRequestData().setTopicNames(singletonList("foo")),
       ApiKeys.DELETE_TOPICS.latestVersion().toInt, hasClusterAuth = true, _ => Set.empty, _ => Set.empty)

@@ -14,20 +14,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.kafka.storage.diskless;
+package io.aiven.inkless.engine;
 
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
+import java.util.Map;
 
-public final class DisklessFutures {
-    private DisklessFutures() { }
+/**
+ * Creates fully initialized broker and controller components in an isolated runtime.
+ * Providers have no owned resources; ownership of each component transfers to its caller.
+ * If construction fails, the provider closes every resource it opened.
+ *
+ * <p>Factory calls and component calls run with the plugin context classloader. Providers must
+ * preserve that context for asynchronous tasks they submit to executors they do not own.
+ */
+public interface DisklessStorageProvider {
+    DisklessEngine createBrokerEngine(Map<String, ?> configs, DisklessEngine.Context context) throws Exception;
 
-    public static Throwable unwrap(Throwable error) {
-        Throwable current = error;
-        while ((current instanceof CompletionException || current instanceof ExecutionException)
-                && current.getCause() != null) {
-            current = current.getCause();
-        }
-        return current;
-    }
+    DisklessTopicLifecycle createTopicLifecycle(Map<String, ?> configs) throws Exception;
 }

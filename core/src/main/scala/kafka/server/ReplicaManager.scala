@@ -18,8 +18,9 @@ package kafka.server
 
 import com.yammer.metrics.core.Meter
 import io.aiven.inkless.consume.ConcatenatedRecords
-import io.aiven.inkless.engine.DisklessEngine
-import io.aiven.inkless.engine.DisklessEngine.{FetchAvailability, FetchProbe, ProducerState}
+import io.aiven.inkless.engine.{DisklessEngine, DisklessRequestContext}
+import io.aiven.inkless.engine.DisklessEngine.{FetchAvailability, FetchProbe}
+import io.aiven.inkless.engine.TieredStorage.ProducerState
 import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, ConsolidationFetcherManager, ConsolidationMetrics, ConsolidationReconciler, DelayedConsolidationFetch}
 import kafka.cluster.Partition
 import kafka.log.LogManager
@@ -261,6 +262,8 @@ class ReplicaManager(val config: KafkaConfig,
       "ConsolidationFetch", config.brokerId, 0)
 
   private val _inklessMetadataView: InklessMetadataView = inklessMetadataView.getOrElse(new InklessMetadataView(metadataCache.asInstanceOf[KRaftMetadataCache], () => config.extractLogConfigMap))
+  private val recordDeleter = disklessEngine.flatMap(_.recordDeleter().toScala)
+  private val fetchProber = disklessEngine.flatMap(_.fetchProber().toScala)
   private val tieredStorage = disklessEngine.flatMap(_.tieredStorage().toScala)
   private val disklessFetchOffsetRouter = new DisklessFetchOffsetRouter(
     _inklessMetadataView,
@@ -302,7 +305,7 @@ class ReplicaManager(val config: KafkaConfig,
             this,
             quotaMgr,
             fetchHandler,
-            () => engine.createOffsetJob(),
+            () => new DisklessOffsetJob(engine, _inklessMetadataView),
             consolidationMetrics
           )
         }
@@ -835,7 +838,8 @@ class ReplicaManager(val config: KafkaConfig,
                     recordValidationStatsCallback: Map[TopicIdPartition, RecordValidationStats] => Unit = _ => (),
                     requestLocal: RequestLocal = RequestLocal.noCaching,
                     verificationGuards: Map[TopicPartition, VerificationGuard] = Map.empty,
-                    transactionVersion: Short = TransactionVersion.TV_UNKNOWN): Unit = {
+                    transactionVersion: Short = TransactionVersion.TV_UNKNOWN,
+                    disklessRequestContext: Option[DisklessRequestContext] = None): Unit = {
     if (!isValidRequiredAcks(requiredAcks)) {
       sendInvalidRequiredAcksResponse(entriesPerPartition, responseCallback)
       return
@@ -852,7 +856,8 @@ class ReplicaManager(val config: KafkaConfig,
     }
 
     val disklessResponsesFuture = disklessEngine match {
-      case Some(engine) => engine.append(readyDisklessEntries.asJava, requestLocal)
+      case Some(engine) => engine.append(readyDisklessEntries.asJava, requestLocal,
+        disklessRequestContext.getOrElse(DisklessRequestContext.internal(config.brokerId)))
       case _ =>
         if (disklessEntries.nonEmpty)
           error(s"Received diskless entries to append for topics ${disklessEntries.keys.map(_.topic()).mkString(", ")} but diskless storage system is not enabled. " +
@@ -931,7 +936,8 @@ class ReplicaManager(val config: KafkaConfig,
                           responseCallback: Map[TopicIdPartition, PartitionResponse] => Unit,
                           recordValidationStatsCallback: Map[TopicIdPartition, RecordValidationStats] => Unit = _ => (),
                           requestLocal: RequestLocal = RequestLocal.noCaching,
-                          transactionSupportedOperation: TransactionSupportedOperation): Unit = {
+                          transactionSupportedOperation: TransactionSupportedOperation,
+                          disklessRequestContext: Option[DisklessRequestContext] = None): Unit = {
 
     val transactionalProducerInfo = mutable.HashSet[(Long, Short)]()
     val topicPartitionBatchInfo = mutable.Map[TopicPartition, Int]()
@@ -1002,7 +1008,8 @@ class ReplicaManager(val config: KafkaConfig,
         responseCallback = newResponseCallback,
         recordValidationStatsCallback = recordValidationStatsCallback,
         requestLocal = newRequestLocal,
-        verificationGuards = verificationGuards
+        verificationGuards = verificationGuards,
+        disklessRequestContext = disklessRequestContext
       )
     }
 
@@ -1537,7 +1544,7 @@ class ReplicaManager(val config: KafkaConfig,
     }.toMap
     val disklessDeleteRecordsRequested = disklessStartOffsetPerPartition.nonEmpty
 
-    val failedDisklessDeleteRecords = if (disklessDeleteRecordsRequested && !disklessEngine.exists(_.supportsDeleteRecords())) {
+    val failedDisklessDeleteRecords = if (disklessDeleteRecordsRequested && recordDeleter.isEmpty) {
       error(s"Cannot delete records from diskless partitions ${disklessStartOffsetPerPartition.keys.mkString(", ")}: the engine does not support DeleteRecords")
       disklessStartOffsetPerPartition.keys.map { topicPartition =>
         topicPartition -> new DeleteRecordsPartitionResult()
@@ -1646,7 +1653,7 @@ class ReplicaManager(val config: KafkaConfig,
       if (disklessOffsetsAfterLocalDelete.isEmpty) {
         finalizeCrossTierAndRespond(localResponse ++ failedDisklessDeleteRecords)
       } else {
-        disklessEngine.get.deleteRecords(
+        recordDeleter.get.deleteRecords(
           disklessOffsetsAfterLocalDelete.view.mapValues(java.lang.Long.valueOf).toMap.asJava
         ).whenComplete { (results, failure) =>
           val response = if (failure == null) results.asScala.toMap else {
@@ -2033,7 +2040,7 @@ class ReplicaManager(val config: KafkaConfig,
                   buildErrorResponse: (Errors, ListOffsetsPartition) => ListOffsetsPartitionResponse,
                   responseCallback: Consumer[util.Collection[ListOffsetsTopicResponse]],
                   timeoutMs: Int = 0): Unit = {
-    val maybeFetchOffsetJob = disklessEngine.map(_.createOffsetJob())
+    val maybeFetchOffsetJob = disklessEngine.map(engine => new DisklessOffsetJob(engine, _inklessMetadataView))
     val statusByPartition = mutable.Map[TopicPartition, ListOffsetsPartitionStatus]()
 
     val classicFetch: (TopicPartition, ListOffsetsPartition, Boolean) => ListOffsetsPartitionStatus =
@@ -2055,9 +2062,9 @@ class ReplicaManager(val config: KafkaConfig,
         } else if (isListOffsetsTimestampUnsupported(partition.timestamp(), version)) {
           statusByPartition += topicPartition ->
             ListOffsetsPartitionStatus.builder().responseOpt(Optional.of(buildErrorResponse(Errors.UNSUPPORTED_VERSION, partition))).build()
-        } else if (maybeFetchOffsetJob.exists(_.mustHandle(topic.name))) {
+        } else if (maybeFetchOffsetJob.isDefined && _inklessMetadataView.isDisklessTopic(topic.name)) {
           statusByPartition += topicPartition ->
-            disklessFetchOffsetRouter.route(maybeFetchOffsetJob.get, () => disklessEngine.get.createOffsetJob(),
+            disklessFetchOffsetRouter.route(maybeFetchOffsetJob.get, () => new DisklessOffsetJob(disklessEngine.get, _inklessMetadataView),
               topicPartition, partition, replicaId, version, classicLogStart, hasCompleteClassicPrefix, classicFetch)
         } else {
           statusByPartition += topicPartition -> classicFetch(topicPartition, partition, false)
@@ -2247,7 +2254,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   /** Best-effort readiness hints; empty means the engine requires asynchronous fetch. */
   def probeDisklessFetch(requests: Seq[FetchProbe]): Option[util.List[FetchAvailability]] =
-    disklessEngine.flatMap(_.probeFetch(requests.asJava).toScala)
+    fetchProber.map(_.probeFetch(requests.asJava))
 
   /**
    * Serves the diskless leg of a fetch.
@@ -3495,7 +3502,7 @@ class ReplicaManager(val config: KafkaConfig,
   def lastOffsetForLeaderEpoch(
     requestedEpochInfo: Seq[OffsetForLeaderTopic]
   ): Seq[OffsetForLeaderTopicResult] = {
-    lazy val disklessOffsetJob = disklessEngine.map(_.createOffsetJob())
+    lazy val disklessOffsetJob = disklessEngine.map(engine => new DisklessOffsetJob(engine, _inklessMetadataView))
     var disklessOffsetForLeaderEpochRequested = false
 
     def localOffsetForLeaderEpoch(
