@@ -102,11 +102,6 @@ public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeab
         List<FetchAvailability> probeFetch(List<FetchProbe> requests);
     }
 
-    /** Optional background consolidation and cross-tier retention coordination. */
-    default Optional<ConsolidationSupport> consolidation() {
-        return Optional.empty();
-    }
-
     /** Optional takeover of classic logs; independent of consolidation support. */
     default Optional<LogTransitionSupport> logTransition() {
         return Optional.empty();

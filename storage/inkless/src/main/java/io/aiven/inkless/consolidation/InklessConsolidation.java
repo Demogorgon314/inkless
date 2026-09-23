@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine;
+package io.aiven.inkless.consolidation;
 
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
@@ -23,12 +23,15 @@ import org.apache.kafka.common.protocol.Errors;
 import java.util.Map;
 import java.util.OptionalLong;
 
+import io.aiven.inkless.engine.Fetcher;
+
 /**
+ * Internal Inkless coordination with Kafka's local and remote logs; not a storage-provider SPI.
  * Kafka owns local-log coordination and retries; the engine owns external metadata and caches.
  * Metadata methods retain the native synchronous contract; callers must not treat them as nonblocking.
  * Returned services are owned and closed by the engine, never by their callers.
  */
-public interface ConsolidationSupport extends Fetcher {
+public interface InklessConsolidation extends Fetcher {
     /** A nonnegative offset is usable only with NONE; a negative offset means no value is available. */
     record OffsetResult(Errors error, long offset) { }
 

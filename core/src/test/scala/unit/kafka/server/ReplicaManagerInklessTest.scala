@@ -88,6 +88,7 @@ import java.util.concurrent.{CompletableFuture, CountDownLatch, TimeUnit}
 import java.util.function.Consumer
 import scala.collection.{Map, Seq, mutable}
 import scala.jdk.CollectionConverters._
+import scala.jdk.OptionConverters._
 
 class ReplicaManagerInklessTest {
 
@@ -8897,6 +8898,8 @@ class ReplicaManagerInklessTest {
     when(sharedState.metadata()).thenReturn(inklessMetadata)
 
     val logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
+    val nativeEngine = if (engineClassName.isEmpty && inklessSharedStateEnabled)
+      Some(DisklessEngineFactory.nativeEngine(config, sharedState)) else None
 
     new ReplicaManager(
       metrics = metrics,
@@ -8910,7 +8913,8 @@ class ReplicaManagerInklessTest {
       alterPartitionManager = alterPartitionManager,
       disklessEngine = if (engineClassName.isDefined) {
         Some(DisklessEngines.loadBroker(config.originals, null))
-      } else if (inklessSharedStateEnabled) Some(DisklessEngineFactory.nativeEngine(config, sharedState)) else None,
+      } else nativeEngine,
+      consolidationSupport = nativeEngine.flatMap(_.consolidation().toScala),
       inklessMetadataView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,
       delayedFetchPurgatoryParam = delayedFetchPurgatory,

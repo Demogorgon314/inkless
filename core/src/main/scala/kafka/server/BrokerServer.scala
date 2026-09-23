@@ -17,6 +17,7 @@
 
 package kafka.server
 
+import io.aiven.inkless.consolidation.InklessConsolidation
 import io.aiven.inkless.engine.DisklessEngine
 import kafka.coordinator.group.CoordinatorPartitionWriter
 import kafka.coordinator.transaction.TransactionCoordinator
@@ -167,6 +168,7 @@ class BrokerServer(
 
   var persister: Persister = _
 
+  private var maybeInklessConsolidation: Option[InklessConsolidation] = None
   private var maybeDisklessEngine: Option[DisklessEngine] = None
   private var maybeInitDisklessLogManager: Option[InitDisklessLogManager] = None
   private var initDisklessLogChannelManager: NodeToControllerChannelManager = _
@@ -355,8 +357,10 @@ class BrokerServer(
       val defaultActionQueue = new DelayedActionQueue
 
       val inklessMetadataView = new InklessMetadataView(metadataCache, () => config.extractLogConfigMap)
-      maybeDisklessEngine = DisklessEngineFactory.create(config, time, metadataCache, inklessMetadataView,
+      val storage = DisklessEngineFactory.create(config, time, metadataCache, inklessMetadataView,
         brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.inklessControlPlane)
+      maybeDisklessEngine = storage.map(_.engine)
+      maybeInklessConsolidation = storage.flatMap(_.consolidation)
       val logTransition = maybeDisklessEngine.flatMap(_.logTransition().toScala)
 
       initDisklessLogChannelManager = new NodeToControllerChannelManagerImpl(
@@ -398,6 +402,7 @@ class BrokerServer(
         directoryEventHandler = directoryEventHandler,
         defaultActionQueue = defaultActionQueue,
         disklessEngine = maybeDisklessEngine,
+        consolidationSupport = maybeInklessConsolidation,
         inklessMetadataView = Some(inklessMetadataView),
         initDisklessLogManager = maybeInitDisklessLogManager
       )
@@ -405,7 +410,7 @@ class BrokerServer(
       // Forwards the leader-only leg of DeleteRecords for diskless topics with a local-log
       // component to the partition's real KRaft leader, since the metadata transformer advertises
       // an AZ-selected replica (a follower) as the client-facing leader.
-      maybeDisklessDeleteRecordsForwarder = maybeDisklessEngine.flatMap(_.consolidation().toScala).map { _ =>
+      maybeDisklessDeleteRecordsForwarder = maybeInklessConsolidation.map { _ =>
         val forwarderLogContext = new LogContext(s"[DisklessDeleteRecordsForwarder broker=${config.brokerId}]")
         val forwarderNetworkClient = NetworkUtils.buildNetworkClient("DisklessDeleteRecordsForwarder", config, metrics, time, forwarderLogContext)
         val forwarder = new DisklessDeleteRecordsForwarder(config, forwarderNetworkClient, metadataCache, inklessMetadataView, time)
@@ -820,7 +825,7 @@ class BrokerServer(
           }
           // For consolidating diskless topics, persist the leader's cross-tier earliest offset in the
           // control plane so any broker can serve it for ListOffsets(EARLIEST). No-op for classic topics.
-          maybeDisklessEngine.flatMap(_.consolidation().toScala).foreach(_.reportRemoteLogStartOffset(tp, remoteLogStartOffset))
+          maybeInklessConsolidation.foreach(_.reportRemoteLogStartOffset(tp, remoteLogStartOffset))
         },
         brokerTopicStats, metrics, endpoint.toJava,
         // Reclaim-floor / become-leader log-start override: for a consolidating diskless partition use the

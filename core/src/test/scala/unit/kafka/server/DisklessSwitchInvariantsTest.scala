@@ -49,6 +49,7 @@ import java.io.File
 import java.util
 import java.util.{Collections, Optional, Properties}
 import scala.jdk.CollectionConverters._
+import scala.jdk.OptionConverters._
 
 /**
  * Invariant tests for the diskless switch recovery paths.
@@ -235,6 +236,7 @@ class DisklessSwitchInvariantsTest {
     disklessTopics.foreach(t => when(inklessMetadata.isDisklessTopic(t)).thenReturn(true))
     when(sharedState.metadata()).thenReturn(inklessMetadata)
 
+    val engine = DisklessEngineFactory.nativeEngine(config, sharedState)
     val logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
     new ReplicaManager(
@@ -247,7 +249,8 @@ class DisklessSwitchInvariantsTest {
       metadataCache = new KRaftMetadataCache(config.brokerId, () => KRaftVersion.KRAFT_VERSION_0),
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = mock(classOf[AlterPartitionManager]),
-      disklessEngine = Some(DisklessEngineFactory.nativeEngine(config, sharedState)),
+      disklessEngine = Some(engine),
+      consolidationSupport = engine.consolidation().toScala,
       inklessMetadataView = Some(inklessMetadata),
     ) {
       override protected def createReplicaFetcherManager(

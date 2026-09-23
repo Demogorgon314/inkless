@@ -56,14 +56,17 @@ Broker metadata updates
 The broker keeps one dispatch layer. The integration does not copy UFK's
 `DisklessStorageReplicaManagerSupport` beside Inkless's routing. The default
 engine creates and owns its request handlers, delete interceptor, retention
-enforcer, file cleaner, topic purger, and shared state. Its optional
-`ConsolidationSupport` service owns the dedicated consolidation reader and
-cross-tier retention coordination. `LogTransitionSupport` handles classic-log
-initialization and repair independently. Broker code never obtains a native handler, cache, or
-control-plane handle.
+enforcer, file cleaner, topic purger, and shared state. Its internal
+`InklessConsolidation` service owns the dedicated consolidation reader and
+cross-tier retention coordination. This service is not part of the provider SPI;
+external engines neither expose it nor implement an empty substitute.
+`LogTransitionSupport` handles classic-log initialization and repair independently.
+Broker code never obtains a native handler, cache, or control-plane handle.
 
 `DisklessEngineFactory` assembles native or isolated provider resources at
-broker startup. `ReplicaManager` receives the resulting engine and owns its
+broker startup. For native Inkless, the factory also supplies a borrowed
+`InklessConsolidation` service through a separate broker constructor parameter.
+External providers supply only their engine. `ReplicaManager` owns engine
 shutdown; the broker closes it if construction fails before ownership transfers.
 The broker stops its scheduler and drains fetchers before closing the engine.
 The engine cancels its scheduled tasks and closes handlers before shared state.
@@ -74,7 +77,6 @@ The engine cancels its scheduled tasks and closes handlers before shared state.
 | `recordDeleter` | Reject unsupported deletion before touching a local-log leg; return per-partition results or an exceptional future mapped by the broker. |
 | `fetchProber` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
 | `start`, `close` | Engine owns maintenance tasks and resources; startup runs once, and native close is idempotent. |
-| `ConsolidationSupport` | Optional background `Fetcher`, cross-tier offsets, and pruning. Kafka owns safe prune boundaries and scheduling. |
 | `LogTransitionSupport` | Optional initialization and repair after Kafka commits a classic-to-diskless transition. Kafka owns coordination and retries. |
 | `DisklessTopicLifecycle` | Separate controller service for topic creation, expansion, configuration, deletion, and reconciliation. |
 
@@ -85,9 +87,9 @@ are no independently configured reader or writer plugins.
 
 The native consolidation and transition metadata calls retain their synchronous behavior.
 Turning them into asynchronous operations requires changing the surrounding
-Kafka coordination paths; this refactor does not make that claim. Ursa returns
-neither optional capability, so it need not emulate Inkless migration or
-consolidation semantics.
+Kafka coordination paths; this refactor does not make that claim. Ursa does not
+provide log-transition support. Inkless consolidation is assembled independently
+of the public SPI; Ursa does not participate in that implementation-specific flow.
 
 `ReplicaManager` retains `InklessMetadataView` for topic routing, leader epochs,
 and cross-tier offset decisions. These broker responsibilities apply regardless
@@ -121,7 +123,7 @@ partition, including failures; an exceptional append does not prove that nothing
 was committed. Engines own asynchronous buffers and cannot retain `RequestLocal`
 for use on background threads.
 
-Optional deletion, readiness probing, consolidation, and log-transition services
+Optional deletion, readiness probing, and log-transition services
 use `Optional<Capability>` consistently. Capability availability is independent;
 broker code never downcasts to the native implementation.
 The loader establishes the plugin context classloader for component and capability

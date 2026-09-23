@@ -46,6 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
 import io.aiven.inkless.common.SharedState;
+import io.aiven.inkless.consolidation.InklessConsolidation;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.ControlPlane;
@@ -75,7 +76,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class DisklessEnginesTest {
-    public static ConsolidationSupport nativeConsolidation(ControlPlane controlPlane) {
+    public static InklessConsolidation nativeConsolidation(ControlPlane controlPlane) {
         var state = mock(SharedState.class);
         when(state.controlPlane()).thenReturn(controlPlane);
         return new InklessConsolidationSupport(state, Optional.empty());

@@ -40,6 +40,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
 import io.aiven.inkless.common.SharedState;
+import io.aiven.inkless.consolidation.InklessConsolidation;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.FindBatchRequest;
@@ -133,8 +134,8 @@ public final class InklessDisklessEngine implements DisklessEngine {
         return result;
     }
 
-    @Override
-    public Optional<ConsolidationSupport> consolidation() {
+    /** Returns internal coordination owned by this engine, for native broker assembly only. */
+    public Optional<InklessConsolidation> consolidation() {
         return Optional.ofNullable(consolidationSupport);
     }
 

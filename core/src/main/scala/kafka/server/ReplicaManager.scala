@@ -21,7 +21,7 @@ import io.aiven.inkless.consume.ConcatenatedRecords
 import io.aiven.inkless.engine.{DisklessEngine, DisklessRequestContext}
 import io.aiven.inkless.engine.DisklessEngine.{FetchAvailability, FetchProbe}
 import io.aiven.inkless.engine.LogTransitionSupport.ProducerState
-import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, ConsolidationFetcherManager, ConsolidationMetrics, ConsolidationReconciler, DelayedConsolidationFetch}
+import io.aiven.inkless.consolidation.{InklessConsolidation, ConsolidatedDisklessLogPruner, ConsolidationFetcherManager, ConsolidationMetrics, ConsolidationReconciler, DelayedConsolidationFetch}
 import kafka.cluster.Partition
 import kafka.log.LogManager
 import kafka.server.QuotaFactory.QuotaManagers
@@ -206,6 +206,7 @@ class ReplicaManager(val config: KafkaConfig,
                      val directoryEventHandler: DirectoryEventHandler = DirectoryEventHandler.NOOP,
                      val defaultActionQueue: ActionQueue = new DelayedActionQueue,
                      disklessEngine: Option[DisklessEngine] = None,
+                     consolidationSupport: Option[InklessConsolidation] = None,
                      inklessMetadataView: Option[InklessMetadataView] = None,
                      initDisklessLogManager: Option[InitDisklessLogManager] = None
                      ) extends Logging {
@@ -264,7 +265,6 @@ class ReplicaManager(val config: KafkaConfig,
   private val _inklessMetadataView: InklessMetadataView = inklessMetadataView.getOrElse(new InklessMetadataView(metadataCache.asInstanceOf[KRaftMetadataCache], () => config.extractLogConfigMap))
   private val recordDeleter = disklessEngine.flatMap(_.recordDeleter().toScala)
   private val fetchProber = disklessEngine.flatMap(_.fetchProber().toScala)
-  private val consolidationSupport = disklessEngine.flatMap(_.consolidation().toScala)
   private val logTransitionSupport = disklessEngine.flatMap(_.logTransition().toScala)
   private def newDisklessOffsetJob(engine: DisklessEngine): DisklessOffsetJob =
     new DisklessOffsetJob(engine, _inklessMetadataView)

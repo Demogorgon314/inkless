@@ -34,6 +34,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 
 import io.aiven.inkless.common.SharedState;
+import io.aiven.inkless.consolidation.InklessConsolidation;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.Reader;
 import io.aiven.inkless.control_plane.AdvanceCrossTierLogStartOffsetRequest;
@@ -42,7 +43,7 @@ import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.PruneDisklessLogsError;
 import io.aiven.inkless.control_plane.PruneDisklessLogsRequest;
 
-final class InklessConsolidationSupport implements ConsolidationSupport, Closeable {
+final class InklessConsolidationSupport implements InklessConsolidation, Closeable {
     private final SharedState state;
     private final Optional<FetchHandler> fetchHandler;
 
