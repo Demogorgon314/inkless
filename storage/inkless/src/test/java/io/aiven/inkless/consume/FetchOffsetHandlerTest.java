@@ -39,6 +39,7 @@ import org.mockito.quality.Strictness;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -59,7 +60,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -70,7 +70,6 @@ import static org.mockito.Mockito.when;
 class FetchOffsetHandlerTest {
     static final String TOPIC_0 = "topic0";
     static final String TOPIC_1 = "topic1";
-    static final String TOPIC_CLASSIC = "topic_classic";
     static final Uuid TOPIC_ID_0 = new Uuid(0, 1);
     static final Uuid TOPIC_ID_1 = new Uuid(0, 2);
     static final TopicPartition T0P0 = new TopicPartition(TOPIC_0, 0);
@@ -93,22 +92,10 @@ class FetchOffsetHandlerTest {
     ArgumentCaptor<Runnable> runnableCaptor;
 
     @Test
-    void mustHandle() {
-        when(metadataView.isDisklessTopic(TOPIC_0)).thenReturn(true);
-        when(metadataView.isDisklessTopic(TOPIC_1)).thenReturn(true);
-        when(metadataView.isDisklessTopic(TOPIC_CLASSIC)).thenReturn(false);
-
-        final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
-        assertThat(job.mustHandle(TOPIC_0)).isTrue();
-        assertThat(job.mustHandle(TOPIC_1)).isTrue();
-        assertThat(job.mustHandle(TOPIC_CLASSIC)).isFalse();
-    }
-
-    @Test
     void empty() {
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
 
-        job.start();
+        job.start(Map.of());
 
         verify(executor, never()).submit((Runnable) any());
         verify(controlPlane, never()).listOffsets(any());
@@ -116,9 +103,6 @@ class FetchOffsetHandlerTest {
 
     @Test
     void globalSuccess() throws ExecutionException, InterruptedException {
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
-        when(metadataView.getTopicId(TOPIC_1)).thenReturn(TOPIC_ID_1);
-
         when(controlPlane.listOffsets(any())).thenAnswer((invocation) -> {
             // The order may be arbitrary.
             final List<ListOffsetsRequest> requests = invocation.getArgument(0);
@@ -136,11 +120,13 @@ class FetchOffsetHandlerTest {
         });
 
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
-        final var future1 = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1));
-        final var future2 = job.add(T0P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(1));
-        final var future3 = job.add(T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3));
+        final var future1 = job.add(TIDP_T0P0);
+        final var future2 = job.add(TIDP_T0P1);
+        final var future3 = job.add(TIDP_T1P1);
 
-        job.start();
+        job.start(Map.of(TIDP_T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1),
+            TIDP_T0P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(1),
+            TIDP_T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3)));
 
         verify(executor).submit(runnableCaptor.capture());
         runnableCaptor.getValue().run();
@@ -162,17 +148,16 @@ class FetchOffsetHandlerTest {
 
     @Test
     void globalFailure() throws ExecutionException, InterruptedException {
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
-        when(metadataView.getTopicId(TOPIC_1)).thenReturn(TOPIC_ID_1);
-
         when(controlPlane.listOffsets(any())).thenThrow(new UnknownServerException("error"));
 
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
-        final var future1 = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1));
-        final var future2 = job.add(T0P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(1));
-        final var future3 = job.add(T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3));
+        final var future1 = job.add(TIDP_T0P0);
+        final var future2 = job.add(TIDP_T0P1);
+        final var future3 = job.add(TIDP_T1P1);
 
-        job.start();
+        job.start(Map.of(TIDP_T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1),
+            TIDP_T0P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(1),
+            TIDP_T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3)));
 
         verify(executor).submit(runnableCaptor.capture());
         runnableCaptor.getValue().run();
@@ -188,16 +173,15 @@ class FetchOffsetHandlerTest {
 
     @Test
     void crossTierEarliestCacheHitSkipsControlPlane() throws ExecutionException, InterruptedException {
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
         when(metadataView.isConsolidatingDisklessTopic(TOPIC_0)).thenReturn(true);
 
         final CrossTierLogStartCache cacheMock = mock(CrossTierLogStartCache.class);
         when(cacheMock.get(TIDP_T0P0)).thenReturn(123L);
 
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, cacheMock, executor, time, metrics);
-        final var future = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(EARLIEST_TIMESTAMP));
+        final var future = job.add(TIDP_T0P0);
 
-        job.start();
+        job.start(Map.of(TIDP_T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(EARLIEST_TIMESTAMP)));
         verify(executor).submit(runnableCaptor.capture());
         runnableCaptor.getValue().run();
 
@@ -211,7 +195,6 @@ class FetchOffsetHandlerTest {
 
     @Test
     void crossTierEarliestCacheMissPopulatesCache() throws ExecutionException, InterruptedException {
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
         when(metadataView.isConsolidatingDisklessTopic(TOPIC_0)).thenReturn(true);
 
         final CrossTierLogStartCache cacheMock = mock(CrossTierLogStartCache.class);
@@ -219,9 +202,9 @@ class FetchOffsetHandlerTest {
         when(controlPlane.listOffsets(any())).thenReturn(List.of(ListOffsetsResponse.success(TIDP_T0P0, -1, 200)));
 
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, cacheMock, executor, time, metrics);
-        final var future = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(EARLIEST_TIMESTAMP));
+        final var future = job.add(TIDP_T0P0);
 
-        job.start();
+        job.start(Map.of(TIDP_T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(EARLIEST_TIMESTAMP)));
         verify(executor).submit(runnableCaptor.capture());
         runnableCaptor.getValue().run();
 
@@ -233,16 +216,15 @@ class FetchOffsetHandlerTest {
 
     @Test
     void nonConsolidatingEarliestDoesNotUseCache() throws ExecutionException, InterruptedException {
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
         when(metadataView.isConsolidatingDisklessTopic(TOPIC_0)).thenReturn(false);
 
         final CrossTierLogStartCache cacheMock = mock(CrossTierLogStartCache.class);
         when(controlPlane.listOffsets(any())).thenReturn(List.of(ListOffsetsResponse.success(TIDP_T0P0, -1, 5)));
 
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, cacheMock, executor, time, metrics);
-        final var future = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(EARLIEST_TIMESTAMP));
+        final var future = job.add(TIDP_T0P0);
 
-        job.start();
+        job.start(Map.of(TIDP_T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(EARLIEST_TIMESTAMP)));
         verify(executor).submit(runnableCaptor.capture());
         runnableCaptor.getValue().run();
 
@@ -255,75 +237,26 @@ class FetchOffsetHandlerTest {
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
     void cancellation(final boolean cancelBeforeStart) {
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
-        when(metadataView.getTopicId(TOPIC_1)).thenReturn(TOPIC_ID_1);
-
         final Future<?> submittedFuture = mock(Future.class);
         doReturn(submittedFuture).when(executor).submit((Runnable) any());
 
         final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
-        job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1));
-        job.add(T0P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(1));
-        job.add(T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3));
+        job.add(TIDP_T0P0);
+        job.add(TIDP_T0P1);
+        job.add(TIDP_T1P1);
 
+        final var requests = Map.of(TIDP_T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1),
+            TIDP_T0P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(1),
+            TIDP_T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3));
         if (cancelBeforeStart) {
             job.cancelHandler().cancel(true);
-            job.start();
+            job.start(requests);
         } else {
-            job.start();
+            job.start(requests);
             job.cancelHandler().cancel(true);
         }
 
         verify(submittedFuture).cancel(eq(true));
-    }
-
-    @Test
-    void topicIdNotFound() throws ExecutionException, InterruptedException {
-        // Simulate a topic whose UUID cannot be resolved (returns ZERO_UUID).
-        when(metadataView.getTopicId(TOPIC_0)).thenReturn(Uuid.ZERO_UUID);
-
-        final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
-        final var future1 = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1));
-
-        job.start();
-
-        // Should not submit anything to the executor since enrichment failed before reaching control plane.
-        verify(executor, never()).submit((Runnable) any());
-        verify(controlPlane, never()).listOffsets(any());
-
-        // All futures should be completed with an error rather than left hanging or throwing.
-        assertThat(future1.isDone()).isTrue();
-        assertThat(future1.get().exception()).isNotEmpty();
-        assertThat(future1.get().exception().get()).isInstanceOf(RuntimeException.class);
-        assertThat(future1.get().exception().get()).message().contains("Topic ID not found");
-        assertThat(future1.get().timestampAndOffset()).isEmpty();
-    }
-
-    @Test
-    void topicIdNotFoundMultiplePartitions() throws ExecutionException, InterruptedException {
-        // First topic resolves fine, second does not — enrichment fails for the batch.
-        // HashMap iteration order is non-deterministic, so TOPIC_0 stub may not be called
-        // if TOPIC_1 (ZERO_UUID) is encountered first by TopicIdEnricher.
-        lenient().when(metadataView.getTopicId(TOPIC_0)).thenReturn(TOPIC_ID_0);
-        when(metadataView.getTopicId(TOPIC_1)).thenReturn(Uuid.ZERO_UUID);
-
-        final FetchOffsetHandler.Job job = new FetchOffsetHandler.Job(metadataView, controlPlane, crossTierLogStartCache, executor, time, metrics);
-        final var future1 = job.add(T0P0, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1));
-        final var future2 = job.add(T1P1, new ListOffsetsRequestData.ListOffsetsPartition().setPartitionIndex(1).setTimestamp(-3));
-
-        job.start();
-
-        verify(executor, never()).submit((Runnable) any());
-        verify(controlPlane, never()).listOffsets(any());
-
-        // All futures in the batch should be completed with the error.
-        for (final var future : List.of(future1, future2)) {
-            assertThat(future.isDone()).isTrue();
-            assertThat(future.get().exception()).isNotEmpty();
-            assertThat(future.get().exception().get()).isInstanceOf(RuntimeException.class);
-            assertThat(future.get().exception().get()).message().contains("Topic ID not found");
-            assertThat(future.get().timestampAndOffset()).isEmpty();
-        }
     }
 
     @Test

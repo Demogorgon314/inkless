@@ -68,7 +68,8 @@ public interface DisklessEngine extends Closeable {
     default void onTopicDeleted(String name, Uuid topicId) {
     }
 
-    default void onTopicConfigChanged(String name, Uuid topicId, Map<String, String> config) {
+    /** Applies topic overrides from the same committed image as the supplied source revision. */
+    default void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
     }
 
     /**

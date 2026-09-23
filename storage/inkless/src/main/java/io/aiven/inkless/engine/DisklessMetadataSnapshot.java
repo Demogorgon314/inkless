@@ -36,7 +36,7 @@ public interface DisklessMetadataSnapshot {
     /** Rejects stale names and partition numbers without looking up another topic incarnation. */
     default Optional<TopicMetadata> partition(TopicIdPartition partition) {
         return topic(partition.topicId()).filter(topic ->
-            topic.topicId().equals(partition.topicId()) && topic.name().equals(partition.topic()) &&
+            topic.name().equals(partition.topic()) &&
                 partition.partition() >= 0 && partition.partition() < topic.partitionCount());
     }
 

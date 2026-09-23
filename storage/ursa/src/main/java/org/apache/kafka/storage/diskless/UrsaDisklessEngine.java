@@ -125,8 +125,8 @@ public final class UrsaDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public void onTopicConfigChanged(String name, Uuid topicId, Map<String, String> configs) {
-        storage.applyTopicConfig(name, topicId, configs);
+    public void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
+        storage.applyTopicConfig(topic.name(), topic.topicId(), topic.configs());
     }
 
     @Override

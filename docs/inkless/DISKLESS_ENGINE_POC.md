@@ -89,7 +89,11 @@ of the selected storage engine.
 `DisklessEngine.Context` supplies Kafka-owned services, broker identity, and a
 supplier of immutable metadata snapshots. Each snapshot resolves diskless topics
 by UUID and reads partition count, raw topic overrides, and source revision from
-one Kafka metadata image. Broker defaults remain separate. Ursa uses one topic
+one Kafka metadata image. Each snapshot caches resolved topics by UUID. Broker
+defaults remain separate. Configuration-change callbacks receive the same
+`TopicMetadata` representation, including raw overrides and source revision,
+from the image being published; they do not read the broker's name-based config
+cache. Removing an override therefore leaves the engine to apply its broker default. Ursa uses one topic
 snapshot to open a partition and initialize its writer; retention and handle
 reconciliation also resolve by UUID. A same-name replacement cannot supply the
 old partition's configuration. A snapshot does not fence subsequent metadata

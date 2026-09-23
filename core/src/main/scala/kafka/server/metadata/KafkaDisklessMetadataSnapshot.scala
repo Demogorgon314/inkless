@@ -24,11 +24,17 @@ import org.apache.kafka.image.MetadataImage
 
 import java.lang.{Boolean => JBoolean}
 import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 import scala.jdk.CollectionConverters._
 
 /** Keeps topic configuration and its revision tied to the image captured by the broker. */
 final class KafkaDisklessMetadataSnapshot(image: MetadataImage) extends DisklessMetadataSnapshot {
-  override def topic(topicId: Uuid): Optional[TopicMetadata] = {
+  private val topics = new ConcurrentHashMap[Uuid, Optional[TopicMetadata]]()
+
+  override def topic(topicId: Uuid): Optional[TopicMetadata] =
+    topics.computeIfAbsent(topicId, id => resolveTopic(id))
+
+  private def resolveTopic(topicId: Uuid): Optional[TopicMetadata] = {
     val topic = image.topics().getTopic(topicId)
     if (topic == null) return Optional.empty()
     val properties = image.configs().configProperties(new ConfigResource(ConfigResource.Type.TOPIC, topic.name()))

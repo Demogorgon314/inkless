@@ -26,7 +26,7 @@ import kafka.cluster.Partition
 import kafka.log.LogManager
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.ReplicaManager.{AtMinIsrPartitionCountMetricName, ConsolidationFetchBytesInPerSecMetricName, ConsolidationHighWatermarkLagFetchRateMetricName, ConsolidationHighWatermarkLagPartitionCountMetricName, ConsolidationLocalBytesPerSecMetricName, ConsolidationSupplementBytesPerSecMetricName, ConsolidationSupplementRateMetricName, FailedIsrUpdatesPerSecMetricName, IsrExpandsPerSecMetricName, IsrShrinksPerSecMetricName, LeaderCountMetricName, OfflineReplicaCountMetricName, PartitionCountMetricName, PartitionsWithLateTransactionsCountMetricName, ProducerIdCountMetricName, ReassigningPartitionsMetricName, SealedPartitionsCountMetricName, DisklessSwitchedReplicasOutsideIsrCountMetricName, UnderMinIsrPartitionCountMetricName, UnderReplicatedPartitionsMetricName, DisklessSwitchedPrefixLagMetricName, DisklessSwitchedPrefixMissingFetchRateMetricName, createLogReadResult, isListOffsetsTimestampUnsupported}
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.{InklessMetadataView, KafkaDisklessMetadataSnapshot}
 import kafka.server.share.DelayedShareFetch
 import kafka.utils._
 import org.apache.kafka.common.{IsolationLevel, KafkaException, Node, TopicIdPartition, TopicPartition, Uuid}
@@ -3778,13 +3778,10 @@ class ReplicaManager(val config: KafkaConfig,
 
   def updateDisklessTopicConfigs(delta: ConfigurationsDelta, newImage: MetadataImage): Unit = {
     disklessEngine.foreach { engine =>
+      val snapshot = new KafkaDisklessMetadataSnapshot(newImage)
       delta.changes().keySet().forEach { resource =>
         val topic = if (resource.`type`() == ConfigResource.Type.TOPIC) newImage.topics().getTopic(resource.name()) else null
-        if (topic != null && _inklessMetadataView.isDisklessTopic(topic.name())) {
-          val configs = _inklessMetadataView.getTopicConfig(topic.name()).originals.asScala
-            .map { case (key, value) => key -> value.toString }.asJava
-          engine.onTopicConfigChanged(topic.name(), topic.id(), configs)
-        }
+        if (topic != null) snapshot.topic(topic.id()).ifPresent(engine.onTopicConfigChanged)
       }
     }
   }
