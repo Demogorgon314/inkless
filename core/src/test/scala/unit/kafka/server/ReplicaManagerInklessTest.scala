@@ -25,6 +25,7 @@ import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, FetchOffsetH
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetResponse, BatchInfo, BatchMetadata, ControlPlane, ControlPlaneException, FindBatchResponse, RepairDisklessLogRequest, RepairDisklessLogResponse, DeleteRecordsResponse => CpDeleteRecordsResponse, ListOffsetsRequest => CpListOffsetsRequest, ListOffsetsResponse => CpListOffsetsResponse}
 import io.aiven.inkless.produce.AppendHandler
 import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessMetadataSnapshot}
+import io.aiven.inkless.engine.OffsetReader
 import io.aiven.inkless.engine.DisklessEnginesTest.{TestEngine => TestDisklessEngine}
 import kafka.cluster.Partition
 import kafka.server.QuotaFactory.QuotaManagers
@@ -189,7 +190,7 @@ class ReplicaManagerInklessTest {
       Errors.NONE, 123L, 0L, RECORDS, Optional.empty(), OptionalLong.empty(),
       Optional.empty(), OptionalInt.empty(), false))
     val offsetResult = util.Map.of(disklessTopicPartition,
-      new DisklessEngine.ListOffsetsResult(Errors.NONE, 0L, 123L, Optional.of[Integer](0)))
+      new OffsetReader.ListOffsetsResult(Errors.NONE, 0L, 123L, Optional.of[Integer](0)))
     val deleter = mock(classOf[DisklessEngine.RecordDeleter])
     val initializer: MockedConstruction.MockInitializer[TestDisklessEngine] = {
       case (engine, _) =>

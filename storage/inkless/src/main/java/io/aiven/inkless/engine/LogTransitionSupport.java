@@ -17,48 +17,22 @@
 package io.aiven.inkless.engine;
 
 import org.apache.kafka.common.TopicIdPartition;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.protocol.Errors;
 
 import java.util.List;
-import java.util.Map;
-import java.util.OptionalLong;
 
 /**
- * Kafka owns local-log coordination and retries; the engine owns external metadata and caches.
- * Metadata methods retain the native synchronous contract; callers must not treat them as nonblocking.
- * Returned services are owned and closed by the engine, never by their callers.
+ * Takes over classic logs after Kafka commits the transition.
+ * Kafka owns the transition state machine and retries; implementations own external log metadata.
+ * Methods retain the synchronous contract. The engine owns the returned service's lifetime.
  */
-public interface TieredStorage extends DisklessEngine.Fetcher {
-    /** A nonnegative offset is usable only with NONE; a negative offset means no value is available. */
-    record OffsetResult(Errors error, long offset) { }
-
+public interface LogTransitionSupport {
     record ProducerState(long producerId, short producerEpoch, int baseSequence, int lastSequence,
                          long assignedOffset, long batchMaxTimestamp) { }
 
     record LogInitialization(Uuid topicId, String topicName, int partition,
                              long logStartOffset, long disklessStartOffset, List<ProducerState> producerStates) { }
-
-    /**
-     * Returns only the remote start reported by the local-log leader. Never substitutes the
-     * diskless prune frontier: Kafka uses this value to decide which remote data it can reclaim.
-     */
-    OptionalLong remoteLogStartOffset(TopicIdPartition partition);
-
-    /** Returns the cross-tier logical earliest offset, independently of this broker's local log. */
-    OptionalLong earliestOffset(TopicIdPartition partition);
-
-    /** Advances logical earliest offsets monotonically; does not physically delete remote-tier data. */
-    Map<TopicIdPartition, OffsetResult> advanceEarliestOffsets(Map<TopicIdPartition, Long> offsets);
-
-    /** Queues the leader's remote-start report for engine-owned persistence. */
-    void reportRemoteLogStartOffset(TopicPartition partition, long offset);
-
-    /** Prunes through Kafka's inclusive safe tiered offsets; results contain the new diskless starts. */
-    Map<TopicIdPartition, OffsetResult> prune(Map<TopicIdPartition, Long> highestTieredOffsets);
-
-    long cleanupIntervalMs();
 
     /**
      * Applies the seal and producer state after KRaft commits the transition, on the leader only.

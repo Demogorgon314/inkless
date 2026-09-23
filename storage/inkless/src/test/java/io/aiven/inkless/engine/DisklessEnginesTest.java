@@ -19,6 +19,7 @@ package io.aiven.inkless.engine;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigException;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
@@ -74,10 +75,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class DisklessEnginesTest {
-    public static TieredStorage nativeTieredStorage(ControlPlane controlPlane) {
+    public static ConsolidationSupport nativeConsolidation(ControlPlane controlPlane) {
         var state = mock(SharedState.class);
         when(state.controlPlane()).thenReturn(controlPlane);
-        return new InklessTieredStorage(state, Optional.empty());
+        return new InklessConsolidationSupport(state, Optional.empty());
+    }
+
+    public static LogTransitionSupport nativeLogTransition(ControlPlane controlPlane) {
+        return new InklessLogTransitionSupport(controlPlane);
     }
 
     @Test
@@ -156,24 +161,24 @@ public class DisklessEnginesTest {
     }
 
     @Test
-    public void tieredStorageCallsUsePluginContextAndRestoreItAfterFailure() throws Exception {
+    public void transitionCallsUsePluginContextAndRestoreItAfterFailure() throws Exception {
         var original = Thread.currentThread().getContextClassLoader();
         var delegate = mock(DisklessEngine.class);
-        var storage = mock(TieredStorage.class);
-        when(delegate.tieredStorage()).thenReturn(Optional.of(storage));
+        var storage = mock(LogTransitionSupport.class);
+        when(delegate.logTransition()).thenReturn(Optional.of(storage));
         try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader());
              var engine = DisklessClassLoaderContext.leased(DisklessEngine.class, delegate,
                  DisklessClassLoaderRegistry.acquire(new URL[0], loader))) {
-            when(storage.cleanupIntervalMs()).thenAnswer(invocation -> {
+            when(storage.initializeLogs(any())).thenAnswer(invocation -> {
                 assertSame(loader, Thread.currentThread().getContextClassLoader());
-                return 100L;
+                return List.of(Errors.NONE);
             });
             when(storage.repairLog(any(), anyLong())).thenAnswer(invocation -> {
                 assertSame(loader, Thread.currentThread().getContextClassLoader());
                 throw new IllegalStateException("Storage unavailable");
             });
-            var capability = engine.tieredStorage().orElseThrow();
-            assertEquals(100L, capability.cleanupIntervalMs());
+            var capability = engine.logTransition().orElseThrow();
+            assertEquals(List.of(Errors.NONE), capability.initializeLogs(List.of()));
             assertSame(original, Thread.currentThread().getContextClassLoader());
             assertThrows(IllegalStateException.class, () -> capability.repairLog(null, 0L));
             assertSame(original, Thread.currentThread().getContextClassLoader());

@@ -18,7 +18,7 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.engine.DisklessEngine.Fetcher
+import io.aiven.inkless.engine.Fetcher
 import io.aiven.inkless.engine.DisklessEngine.FetchProbe
 import kafka.server.ReplicaManager
 import kafka.utils.Logging
@@ -126,7 +126,7 @@ class DelayedConsolidationFetch(
 
   override def onComplete(): Unit = {
     try {
-      fetchHandler.handle(params, fetchInfos).whenComplete { (response, throwable) =>
+      fetchHandler.fetch(params, fetchInfos).whenComplete { (response, throwable) =>
         if (throwable == null) {
           // handle never completes with a null response (it substitutes an error map on failure).
           responseCallback(response)

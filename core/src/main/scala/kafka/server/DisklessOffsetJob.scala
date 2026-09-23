@@ -16,8 +16,8 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.DisklessEngine
-import io.aiven.inkless.engine.DisklessEngine.{ListOffsetsResult, ListOffsetsSpec}
+import io.aiven.inkless.engine.OffsetReader
+import io.aiven.inkless.engine.OffsetReader.{ListOffsetsResult, ListOffsetsSpec}
 import kafka.server.metadata.InklessMetadataView
 import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition
@@ -33,7 +33,7 @@ import scala.jdk.CollectionConverters._
  * Collects one broker ListOffsets batch and adapts engine results to Kafka's purgatory.
  * Topic identities are fixed when added. Each asynchronous hybrid fallback uses a fresh job.
  */
-class DisklessOffsetJob(engine: DisklessEngine, metadata: InklessMetadataView) {
+class DisklessOffsetJob(engine: OffsetReader, metadata: InklessMetadataView) {
   private val requests = new LinkedHashMap[TopicIdPartition, ListOffsetsSpec]()
   private val results = new LinkedHashMap[TopicIdPartition, CompletableFuture[FileRecordsOrError]]()
   private val cancellation = new CompletableFuture[Void]()

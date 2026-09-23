@@ -21,13 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.record.internal.MemoryRecords;
-import org.apache.kafka.common.requests.FetchRequest;
-import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
 import org.apache.kafka.common.utils.Time;
-import org.apache.kafka.server.common.RequestLocal;
-import org.apache.kafka.server.storage.log.FetchParams;
-import org.apache.kafka.server.storage.log.FetchPartitionData;
 import org.apache.kafka.server.util.Scheduler;
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
@@ -58,7 +52,7 @@ import java.util.function.Supplier;
  * and must not use them after engine close.
  * Callbacks may run on completion threads, so neither side may assume a request-handler thread.
  */
-public interface DisklessEngine extends Closeable {
+public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeable {
     /** Kafka-owned services; metadata.get() captures one image for a request or maintenance pass. */
     record Context(Time time, int brokerId, BrokerTopicStats metrics,
                    Map<String, Object> logDefaults, Supplier<DisklessMetadataSnapshot> metadata) {
@@ -71,32 +65,6 @@ public interface DisklessEngine extends Closeable {
     /** Applies topic overrides from the same committed image as the supplied source revision. */
     default void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
     }
-
-    /**
-     * Completes after the engine commits the records. Uses RequestLocal only on the calling
-     * thread; asynchronous work must own any buffers it retains beyond the call.
-     */
-    CompletableFuture<Map<TopicIdPartition, PartitionResponse>> append(
-        Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal, DisklessRequestContext requestContext);
-
-    /**
-     * Preserves request iteration order when spending the shared fetch byte budget.
-     * Returns a result for every requested partition, including partition-level failures.
-     */
-    CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
-        FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);
-
-    record ListOffsetsSpec(long timestamp, Optional<Integer> currentLeaderEpoch) { }
-
-    /** A negative offset means that no record matches the timestamp. */
-    record ListOffsetsResult(Errors error, long timestamp, long offset, Optional<Integer> leaderEpoch) { }
-
-    /**
-     * Returns one result per requested topic incarnation. Kafka resolves topic IDs before dispatch.
-     * Canceling the future is best effort and does not guarantee cancellation of backend work.
-     */
-    CompletableFuture<Map<TopicIdPartition, ListOffsetsResult>> listOffsets(
-        Map<TopicIdPartition, ListOffsetsSpec> requests);
 
     /** Starts engine-owned maintenance after broker construction. Called once before shutdown. */
     default void start(Scheduler scheduler, long initialDelayMs) {
@@ -134,15 +102,13 @@ public interface DisklessEngine extends Closeable {
         List<FetchAvailability> probeFetch(List<FetchProbe> requests);
     }
 
-    /** Optional cooperation with Kafka's local and remote tiers; absent for standalone engines. */
-    default Optional<TieredStorage> tieredStorage() {
+    /** Optional background consolidation and cross-tier retention coordination. */
+    default Optional<ConsolidationSupport> consolidation() {
         return Optional.empty();
     }
 
-    /** Asynchronous record fetch with the same ordering and ownership contract as engine fetch. */
-    @FunctionalInterface
-    interface Fetcher {
-        CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> handle(
-            FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);
+    /** Optional takeover of classic logs; independent of consolidation support. */
+    default Optional<LogTransitionSupport> logTransition() {
+        return Optional.empty();
     }
 }

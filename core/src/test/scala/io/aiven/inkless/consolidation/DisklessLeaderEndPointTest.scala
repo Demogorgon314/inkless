@@ -21,7 +21,7 @@ package io.aiven.inkless.consolidation
 import java.util.function.Supplier
 import io.aiven.inkless.consume.ConcatenatedRecords
 import kafka.server.DisklessOffsetJob
-import io.aiven.inkless.engine.DisklessEngine.{Fetcher}
+import io.aiven.inkless.engine.Fetcher
 import kafka.cluster.Partition
 import kafka.server.{KafkaConfig, QuotaFactory, ReplicaManager, ReplicaQuota, ReplicationQuotaManager}
 import kafka.utils.TestUtils
@@ -174,7 +174,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
     newEndPoint(fetchHandler, offsetJobs, replicaManager)
   }
 
@@ -207,7 +207,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
     newEndPoint(fetchHandler, offsetJobs, replicaManager)
   }
 
@@ -262,7 +262,7 @@ class DisklessLeaderEndPointTest {
       false
     )
     val responseMap = Map(topicIdPartition -> fetchData).asJava
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(responseMap))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(responseMap))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -303,7 +303,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -915,7 +915,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -957,7 +957,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
 
@@ -986,7 +986,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -1016,7 +1016,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -1050,7 +1050,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -1082,7 +1082,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -1350,7 +1350,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 0L)).get(topicPartition)
@@ -1419,7 +1419,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 200L)).get(topicPartition)
@@ -1457,7 +1457,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 450L)).get(topicPartition)
@@ -1497,7 +1497,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val pd = endPoint.fetch(fetchBuilderForOffset(requestedOffset = 200L)).get(topicPartition)
@@ -1555,7 +1555,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(
@@ -1762,7 +1762,7 @@ class DisklessLeaderEndPointTest {
       OptionalInt.empty(),
       false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val partitionData = new util.HashMap[TopicPartition, FetchRequest.PartitionData]()
@@ -1867,7 +1867,7 @@ class DisklessLeaderEndPointTest {
       Errors.NONE, 1000L, 0L, combined,
       Optional.empty(), OptionalLong.empty(), Optional.empty(), OptionalInt.empty(), false
     )
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(Map(topicIdPartition -> fetchData).asJava))
 
     val endPoint = newEndPoint(fetchHandler, offsetJobs, replicaManager)
     val fetchState = new PartitionFetchState(

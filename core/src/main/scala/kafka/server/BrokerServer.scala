@@ -357,7 +357,7 @@ class BrokerServer(
       val inklessMetadataView = new InklessMetadataView(metadataCache, () => config.extractLogConfigMap)
       maybeDisklessEngine = DisklessEngineFactory.create(config, time, metadataCache, inklessMetadataView,
         brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.inklessControlPlane)
-      val tieredStorage = maybeDisklessEngine.flatMap(_.tieredStorage().toScala)
+      val logTransition = maybeDisklessEngine.flatMap(_.logTransition().toScala)
 
       initDisklessLogChannelManager = new NodeToControllerChannelManagerImpl(
         controllerNodeProvider,
@@ -369,7 +369,7 @@ class BrokerServer(
         60000
       )
       initDisklessLogChannelManager.start()
-      maybeInitDisklessLogManager = tieredStorage.map { storage =>
+      maybeInitDisklessLogManager = logTransition.map { storage =>
         new InitDisklessLogManager(
           controllerChannelManager = initDisklessLogChannelManager,
           storage = storage,
@@ -405,7 +405,7 @@ class BrokerServer(
       // Forwards the leader-only leg of DeleteRecords for diskless topics with a local-log
       // component to the partition's real KRaft leader, since the metadata transformer advertises
       // an AZ-selected replica (a follower) as the client-facing leader.
-      maybeDisklessDeleteRecordsForwarder = tieredStorage.map { _ =>
+      maybeDisklessDeleteRecordsForwarder = maybeDisklessEngine.flatMap(_.consolidation().toScala).map { _ =>
         val forwarderLogContext = new LogContext(s"[DisklessDeleteRecordsForwarder broker=${config.brokerId}]")
         val forwarderNetworkClient = NetworkUtils.buildNetworkClient("DisklessDeleteRecordsForwarder", config, metrics, time, forwarderLogContext)
         val forwarder = new DisklessDeleteRecordsForwarder(config, forwarderNetworkClient, metadataCache, inklessMetadataView, time)
@@ -820,7 +820,7 @@ class BrokerServer(
           }
           // For consolidating diskless topics, persist the leader's cross-tier earliest offset in the
           // control plane so any broker can serve it for ListOffsets(EARLIEST). No-op for classic topics.
-          maybeDisklessEngine.flatMap(_.tieredStorage().toScala).foreach(_.reportRemoteLogStartOffset(tp, remoteLogStartOffset))
+          maybeDisklessEngine.flatMap(_.consolidation().toScala).foreach(_.reportRemoteLogStartOffset(tp, remoteLogStartOffset))
         },
         brokerTopicStats, metrics, endpoint.toJava,
         // Reclaim-floor / become-leader log-start override: for a consolidating diskless partition use the

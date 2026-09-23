@@ -18,7 +18,8 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.engine.DisklessEngine.{Fetcher, FetchProbe, FetchAvailability}
+import io.aiven.inkless.engine.Fetcher
+import io.aiven.inkless.engine.DisklessEngine.{ FetchProbe, FetchAvailability}
 import org.mockito.stubbing.Answer
 import scala.jdk.CollectionConverters._
 import io.aiven.inkless.control_plane.{BatchInfo, BatchMetadata, FindBatchResponse}
@@ -119,7 +120,7 @@ class DelayedConsolidationFetchTest {
     val batches = util.List.of(batch(0, 4, 500), batch(5, 9, 500))
     val response = util.List.of(FindBatchResponse.success(batches, 0L, 100L))
     when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
     val captured = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
@@ -134,7 +135,7 @@ class DelayedConsolidationFetchTest {
     assertTrue(op.tryComplete(), "tryComplete should succeed when bytes >= minBytes")
     assertTrue(op.isCompleted, "operation must be completed after tryComplete returns true")
     assertNotNull(captured.get(1, TimeUnit.SECONDS))
-    verify(fetchHandler, times(1)).handle(any(), any())
+    verify(fetchHandler, times(1)).fetch(any(), any())
   }
 
   @Test
@@ -145,7 +146,7 @@ class DelayedConsolidationFetchTest {
     val firstResponse = FindBatchResponse.success(util.List.of(batchFor(tip, 0, 4, 100)), 0L, 100L)
     val secondResponse = FindBatchResponse.success(util.List.of(batchFor(secondTip, 0, 4, 125)), 0L, 100L)
     when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(util.List.of(firstResponse, secondResponse)))
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData, secondTip, emptyFetchPartitionData)))
 
     val captured = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
@@ -169,7 +170,7 @@ class DelayedConsolidationFetchTest {
 
     val firstResponse = FindBatchResponse.success(util.List.of(batchFor(tip, 0, 4, 100)), 0L, 100L)
     when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(util.List.of(firstResponse)))
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData, secondTip, emptyFetchPartitionData)))
 
     val captured = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
@@ -183,7 +184,7 @@ class DelayedConsolidationFetchTest {
 
     assertTrue(op.tryComplete(), "response-count mismatch should defer to the authoritative fetch")
     assertEquals(2, captured.get(1, TimeUnit.SECONDS).size)
-    verify(fetchHandler, times(1)).handle(any(), any())
+    verify(fetchHandler, times(1)).fetch(any(), any())
   }
 
   @Test
@@ -207,7 +208,7 @@ class DelayedConsolidationFetchTest {
     assertFalse(op.tryComplete(), "duplicate purgatory registration check should not re-probe the control plane")
     assertFalse(op.isCompleted, "operation must remain in purgatory")
     verify(replicaManager, times(1)).probeDisklessFetch(any())
-    verify(fetchHandler, times(0)).handle(any(), any())
+    verify(fetchHandler, times(0)).fetch(any(), any())
   }
 
   @Test
@@ -217,7 +218,7 @@ class DelayedConsolidationFetchTest {
 
     val response = util.List.of(FindBatchResponse.success(util.List.of(), 0L, 100L))
     when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
     val captured = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
@@ -234,7 +235,7 @@ class DelayedConsolidationFetchTest {
 
     assertEquals(1, captured.get(1, TimeUnit.SECONDS).size)
     verify(replicaManager, times(1)).probeDisklessFetch(any())
-    verify(fetchHandler, times(1)).handle(any(), any())
+    verify(fetchHandler, times(1)).fetch(any(), any())
   }
 
   @Test
@@ -245,7 +246,7 @@ class DelayedConsolidationFetchTest {
     // control plane returns OFFSET_OUT_OF_RANGE -- should short-circuit the wait
     val response = util.List.of(FindBatchResponse.offsetOutOfRange(0L, 100L))
     when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
     val op = new DelayedConsolidationFetch(
@@ -266,7 +267,7 @@ class DelayedConsolidationFetchTest {
     val fetchHandler = mock(classOf[Fetcher])
 
     when(replicaManager.probeDisklessFetch(any())).thenThrow(new RuntimeException("control plane down"))
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
     val op = new DelayedConsolidationFetch(
@@ -286,7 +287,7 @@ class DelayedConsolidationFetchTest {
   def emptyFetchInfosCompletesImmediately(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
     val fetchHandler = mock(classOf[Fetcher])
-    when(fetchHandler.handle(any(), any()))
+    when(fetchHandler.fetch(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of[TopicIdPartition, FetchPartitionData]()))
 
     val op = new DelayedConsolidationFetch(
@@ -307,7 +308,7 @@ class DelayedConsolidationFetchTest {
 
     val failed = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
     failed.completeExceptionally(new RuntimeException("storage down"))
-    when(fetchHandler.handle(any(), any())).thenReturn(failed)
+    when(fetchHandler.fetch(any(), any())).thenReturn(failed)
 
     val captured = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
     val op = new DelayedConsolidationFetch(
@@ -331,7 +332,7 @@ class DelayedConsolidationFetchTest {
     val fetchHandler = mock(classOf[Fetcher])
 
     val pending = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
-    when(fetchHandler.handle(any(), any())).thenReturn(pending)
+    when(fetchHandler.fetch(any(), any())).thenReturn(pending)
 
     val captured = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
     val op = new DelayedConsolidationFetch(

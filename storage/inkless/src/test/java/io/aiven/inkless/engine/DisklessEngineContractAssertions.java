@@ -35,7 +35,7 @@ public final class DisklessEngineContractAssertions {
 
     public static void assertOffsetBatch(DisklessEngine engine, TopicIdPartition known,
                                           TopicIdPartition missing, long expectedLatest) throws Exception {
-        var spec = new DisklessEngine.ListOffsetsSpec(ListOffsetsRequest.LATEST_TIMESTAMP, Optional.empty());
+        var spec = new OffsetReader.ListOffsetsSpec(ListOffsetsRequest.LATEST_TIMESTAMP, Optional.empty());
         var requests = Map.of(known, spec, missing, spec);
         var response = engine.listOffsets(requests).get(10, TimeUnit.SECONDS);
         assertEquals(requests.keySet(), response.keySet(), "A failed partition must not disappear from the batch");

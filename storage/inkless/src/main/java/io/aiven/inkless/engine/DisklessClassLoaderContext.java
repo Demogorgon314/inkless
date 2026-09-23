@@ -29,7 +29,8 @@ final class DisklessClassLoaderContext {
 
     // Only these engine-owned services cross the boundary. Values and futures are never proxied.
     private static final Map<String, Class<?>> CAPABILITY_TYPES = Map.of(
-        "tieredStorage", TieredStorage.class,
+        "consolidation", ConsolidationSupport.class,
+        "logTransition", LogTransitionSupport.class,
         "recordDeleter", DisklessEngine.RecordDeleter.class,
         "fetchProber", DisklessEngine.FetchProber.class);
 

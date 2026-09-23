@@ -38,20 +38,15 @@ import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.Reader;
 import io.aiven.inkless.control_plane.AdvanceCrossTierLogStartOffsetRequest;
 import io.aiven.inkless.control_plane.AdvanceCrossTierLogStartOffsetResponse;
-import io.aiven.inkless.control_plane.InitDisklessLogProducerState;
-import io.aiven.inkless.control_plane.InitDisklessLogRequest;
 import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.PruneDisklessLogsError;
 import io.aiven.inkless.control_plane.PruneDisklessLogsRequest;
-import io.aiven.inkless.control_plane.RepairDisklessLogRequest;
-import io.aiven.inkless.engine.TieredStorage.LogInitialization;
-import io.aiven.inkless.engine.TieredStorage.OffsetResult;
 
-final class InklessTieredStorage implements TieredStorage, Closeable {
+final class InklessConsolidationSupport implements ConsolidationSupport, Closeable {
     private final SharedState state;
     private final Optional<FetchHandler> fetchHandler;
 
-    InklessTieredStorage(SharedState state, Optional<InklessDisklessEngine.ConsolidationConfig> config) {
+    InklessConsolidationSupport(SharedState state, Optional<InklessDisklessEngine.ConsolidationConfig> config) {
         this.state = state;
         this.fetchHandler = config.map(c -> new FetchHandler(new Reader(
             state.time(), state.objectKeyCreator(), state.keyAlignmentStrategy(), state.cache(),
@@ -65,7 +60,7 @@ final class InklessTieredStorage implements TieredStorage, Closeable {
     }
 
     @Override
-    public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> handle(
+    public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions) {
         return fetchHandler.orElseThrow(() -> new IllegalStateException("Consolidation is disabled"))
             .handle(params, partitions);
@@ -127,29 +122,6 @@ final class InklessTieredStorage implements TieredStorage, Closeable {
             new OffsetResult(r.error() == PruneDisklessLogsError.NONE ? Errors.NONE : Errors.UNKNOWN_TOPIC_OR_PARTITION,
                 r.disklessLogStartOffset())));
         return result;
-    }
-
-    @Override
-    public long cleanupIntervalMs() {
-        return state.config().consolidationCleanupInterval().toMillis();
-    }
-
-    @Override
-    public List<Errors> initializeLogs(List<LogInitialization> requests) {
-        var nativeRequests = requests.stream().map(r -> new InitDisklessLogRequest(
-            r.topicId(), r.topicName(), r.partition(), r.logStartOffset(), r.disklessStartOffset(),
-            r.producerStates().stream().map(p -> new InitDisklessLogProducerState(
-                p.producerId(), p.producerEpoch(), p.baseSequence(), p.lastSequence(),
-                p.assignedOffset(), p.batchMaxTimestamp())).toList())).toList();
-        var responses = state.controlPlane().initDisklessLog(nativeRequests);
-        return responses == null ? List.of() : responses.stream().map(r -> r.error()).toList();
-    }
-
-    @Override
-    public Errors repairLog(TopicIdPartition partition, long startOffset) {
-        var response = state.controlPlane().repairDisklessLog(List.of(new RepairDisklessLogRequest(
-            partition.topicId(), partition.topic(), partition.partition(), startOffset))).get(0);
-        return response.found() ? Errors.NONE : Errors.UNKNOWN_TOPIC_OR_PARTITION;
     }
 
     @Override

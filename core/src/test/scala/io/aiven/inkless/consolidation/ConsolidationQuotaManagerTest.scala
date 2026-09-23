@@ -20,7 +20,7 @@ package io.aiven.inkless.consolidation
 
 import java.util.function.Supplier
 import kafka.server.DisklessOffsetJob
-import io.aiven.inkless.engine.DisklessEngine.Fetcher
+import io.aiven.inkless.engine.Fetcher
 import kafka.server.{KafkaConfig, ReplicaManager, ReplicationQuotaManager}
 import kafka.utils.TestUtils
 import org.apache.kafka.common.TopicPartition

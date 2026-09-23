@@ -21,7 +21,8 @@ package io.aiven.inkless.consolidation
 import java.util.function.Supplier
 import io.aiven.inkless.consume.ConcatenatedRecords
 import kafka.server.DisklessOffsetJob
-import io.aiven.inkless.engine.DisklessEngine.{Fetcher, FetchAvailability}
+import io.aiven.inkless.engine.Fetcher
+import io.aiven.inkless.engine.DisklessEngine.{ FetchAvailability}
 import kafka.cluster.Partition
 import kafka.server._
 import kafka.server.metadata.InklessMetadataView
@@ -117,7 +118,7 @@ class ConsolidationFetcherThreadTest {
 
     // The budgeted fetch served this partition nothing: the aggregate budget went to other partitions.
     val fetchHandler = mock(classOf[Fetcher])
-    when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(
+    when(fetchHandler.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(
       util.Map.of(topicIdPartition, new FetchPartitionData(
         Errors.NONE, highWatermark, 0L, MemoryRecords.EMPTY,
         Optional.empty(), OptionalLong.empty(), Optional.empty(), OptionalInt.empty(), false))

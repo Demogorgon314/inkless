@@ -57,7 +57,8 @@ public final class InklessDisklessEngine implements DisklessEngine {
     private FetchOffsetHandler offsetHandler;
 
     private SharedState sharedState;
-    private InklessTieredStorage tieredStorage;
+    private InklessConsolidationSupport consolidationSupport;
+    private LogTransitionSupport logTransitionSupport;
     private DeleteRecordsInterceptor deleteRecords;
     private RetentionEnforcer retention;
     private FileCleaner cleaner;
@@ -72,7 +73,8 @@ public final class InklessDisklessEngine implements DisklessEngine {
             this.appendHandler = new AppendHandler(sharedState);
             this.fetchHandler = new FetchHandler(sharedState);
             this.offsetHandler = new FetchOffsetHandler(sharedState);
-            this.tieredStorage = new InklessTieredStorage(sharedState, consolidation);
+            this.consolidationSupport = new InklessConsolidationSupport(sharedState, consolidation);
+            this.logTransitionSupport = new InklessLogTransitionSupport(sharedState.controlPlane());
             this.deleteRecords = new DeleteRecordsInterceptor(sharedState);
             this.retention = new RetentionEnforcer(sharedState);
             this.cleaner = new FileCleaner(sharedState);
@@ -132,8 +134,13 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public Optional<TieredStorage> tieredStorage() {
-        return Optional.ofNullable(tieredStorage);
+    public Optional<ConsolidationSupport> consolidation() {
+        return Optional.ofNullable(consolidationSupport);
+    }
+
+    @Override
+    public Optional<LogTransitionSupport> logTransition() {
+        return Optional.ofNullable(logTransitionSupport);
     }
 
     @Override
@@ -233,7 +240,7 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     private void closeComponents() throws IOException {
-        Utils.closeAll(appendHandler, fetchHandler, offsetHandler, tieredStorage,
+        Utils.closeAll(appendHandler, fetchHandler, offsetHandler, consolidationSupport,
             retention, cleaner, purger, deleteRecords);
     }
 }
