@@ -17,7 +17,7 @@
 
 package kafka.server
 
-import io.aiven.inkless.common.SharedState
+import io.aiven.inkless.engine.DisklessEngine
 import kafka.coordinator.group.CoordinatorPartitionWriter
 import kafka.coordinator.transaction.TransactionCoordinator
 import kafka.log.LogManager
@@ -69,7 +69,7 @@ import java.util.concurrent.{CompletableFuture, ExecutionException, TimeUnit, Ti
 import java.util.stream.Collectors
 import scala.collection.Map
 import scala.jdk.CollectionConverters._
-import scala.jdk.OptionConverters.RichOption
+import scala.jdk.OptionConverters._
 
 
 /**
@@ -167,7 +167,7 @@ class BrokerServer(
 
   var persister: Persister = _
 
-  private var maybeInklessSharedState: Option[SharedState] = None
+  private var maybeDisklessEngine: Option[DisklessEngine] = None
   private var maybeInitDisklessLogManager: Option[InitDisklessLogManager] = None
   private var initDisklessLogChannelManager: NodeToControllerChannelManager = _
   private var maybeDisklessDeleteRecordsForwarder: Option[DisklessDeleteRecordsForwarder] = None
@@ -355,18 +355,9 @@ class BrokerServer(
       val defaultActionQueue = new DelayedActionQueue
 
       val inklessMetadataView = new InklessMetadataView(metadataCache, () => config.extractLogConfigMap)
-      maybeInklessSharedState = sharedServer.inklessControlPlane.map { controlPlane =>
-        SharedState.initialize(
-          time,
-          config.brokerId,
-          config.inklessConfig,
-          inklessMetadataView,
-          controlPlane,
-          brokerTopicStats,
-          () => logManager.currentDefaultConfig
-        )
-      }
-      val inklessSharedState = maybeInklessSharedState
+      maybeDisklessEngine = DisklessEngineFactory.create(config, time, metadataCache, inklessMetadataView,
+        brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.inklessControlPlane)
+      val tieredStorage = maybeDisklessEngine.flatMap(_.tieredStorage().toScala)
 
       initDisklessLogChannelManager = new NodeToControllerChannelManagerImpl(
         controllerNodeProvider,
@@ -378,10 +369,10 @@ class BrokerServer(
         60000
       )
       initDisklessLogChannelManager.start()
-      maybeInitDisklessLogManager = sharedServer.inklessControlPlane.map { controlPlane =>
+      maybeInitDisklessLogManager = tieredStorage.map { storage =>
         new InitDisklessLogManager(
           controllerChannelManager = initDisklessLogChannelManager,
-          controlPlane = controlPlane,
+          storage = storage,
           scheduler = kafkaScheduler,
           brokerId = config.brokerId,
           brokerEpochSupplier = () => lifecycleManager.brokerEpoch,
@@ -406,7 +397,7 @@ class BrokerServer(
         addPartitionsToTxnManager = Some(addPartitionsToTxnManager),
         directoryEventHandler = directoryEventHandler,
         defaultActionQueue = defaultActionQueue,
-        inklessSharedState = inklessSharedState,
+        disklessEngine = maybeDisklessEngine,
         inklessMetadataView = Some(inklessMetadataView),
         initDisklessLogManager = maybeInitDisklessLogManager
       )
@@ -414,7 +405,7 @@ class BrokerServer(
       // Forwards the leader-only leg of DeleteRecords for diskless topics with a local-log
       // component to the partition's real KRaft leader, since the metadata transformer advertises
       // an AZ-selected replica (a follower) as the client-facing leader.
-      maybeDisklessDeleteRecordsForwarder = inklessSharedState.map { _ =>
+      maybeDisklessDeleteRecordsForwarder = tieredStorage.map { _ =>
         val forwarderLogContext = new LogContext(s"[DisklessDeleteRecordsForwarder broker=${config.brokerId}]")
         val forwarderNetworkClient = NetworkUtils.buildNetworkClient("DisklessDeleteRecordsForwarder", config, metrics, time, forwarderLogContext)
         val forwarder = new DisklessDeleteRecordsForwarder(config, forwarderNetworkClient, metadataCache, inklessMetadataView, time)
@@ -539,7 +530,7 @@ class BrokerServer(
         apiVersionManager = apiVersionManager,
         clientMetricsManager = clientMetricsManager,
         groupConfigManager = groupConfigManager,
-        inklessSharedState = inklessSharedState,
+        disklessMetadata = maybeDisklessEngine.map(_ => inklessMetadataView),
         disklessDeleteRecordsForwarder = maybeDisklessDeleteRecordsForwarder)
 
       dataPlaneRequestHandlerPool = sharedServer.requestHandlerPoolFactory.createPool(
@@ -829,7 +820,7 @@ class BrokerServer(
           }
           // For consolidating diskless topics, persist the leader's cross-tier earliest offset in the
           // control plane so any broker can serve it for ListOffsets(EARLIEST). No-op for classic topics.
-          maybeInklessSharedState.foreach(_.crossTierLogStartReporter().enqueue(tp, remoteLogStartOffset))
+          maybeDisklessEngine.flatMap(_.tieredStorage().toScala).foreach(_.reportRemoteLogStartOffset(tp, remoteLogStartOffset))
         },
         brokerTopicStats, metrics, endpoint.toJava,
         // Reclaim-floor / become-leader log-start override: for a consolidating diskless partition use the
@@ -931,11 +922,11 @@ class BrokerServer(
       if (replicaManager != null)
         Utils.swallow(this.logger.underlying, () => replicaManager.shutdown())
 
-      // Close SharedState if ReplicaManager was never created (e.g., startup failed between
-      // SharedState.initialize() and ReplicaManager construction). When ReplicaManager exists,
-      // it already closes SharedState during its own shutdown.
+      // Close the engine if ReplicaManager was never created (e.g., startup failed between
+      // engine creation and ReplicaManager construction). When ReplicaManager exists,
+      // it already closes the engine during its own shutdown.
       if (replicaManager == null)
-        maybeInklessSharedState.foreach(s => Utils.swallow(this.logger.underlying, () => s.close()))
+        maybeDisklessEngine.foreach(s => Utils.swallow(this.logger.underlying, () => s.close()))
 
       maybeInitDisklessLogManager.foreach(m => Utils.swallow(this.logger.underlying, () => m.shutdown()))
 

@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.control_plane.{ControlPlane, InitDisklessLogProducerState => CpProducerState}
+import io.aiven.inkless.engine.DisklessEngine.{TieredStorage, ProducerState}
 import kafka.cluster.Partition
 import kafka.server.InitDisklessLogManager._
 import kafka.utils.Logging
@@ -33,7 +33,7 @@ import scala.jdk.CollectionConverters._
 
 class InitDisklessLogManager(
   controllerChannelManager: NodeToControllerChannelManager,
-  controlPlane: ControlPlane,
+  storage: TieredStorage,
   scheduler: Scheduler,
   brokerId: Int,
   brokerEpochSupplier: () => Long,
@@ -68,7 +68,7 @@ class InitDisklessLogManager(
     onRetry = () => metrics.markRetried()
   )
   private val awaitingMetadataQueue = new AwaitingMetadataBatchQueue(
-    controlPlane = controlPlane,
+    storage = storage,
     scheduler = scheduler,
     brokerId = brokerId,
     brokerEpochSupplier = brokerEpochSupplier,
@@ -92,7 +92,7 @@ class InitDisklessLogManager(
     topicId: Uuid,
     topicName: String,
     classicToDisklessStartOffset: Long,
-    producerStates: java.util.List[CpProducerState]
+    producerStates: java.util.List[ProducerState]
   ): Unit = {
     if (classicToDisklessStartOffset < 0) {
       warn(s"Received negative classicToDisklessStartOffset ($classicToDisklessStartOffset) for $topicName:${partition.topicPartition}, skipping control-plane init")

@@ -17,7 +17,7 @@
 package kafka.server
 
 import kafka.server.InitDisklessLogBatchQueue.ParsedResponse
-import io.aiven.inkless.control_plane.ControlPlane
+import io.aiven.inkless.engine.DisklessEngine.TieredStorage
 import kafka.utils.Logging
 import org.apache.kafka.clients.ClientResponse
 import org.apache.kafka.common.TopicPartition
@@ -338,7 +338,7 @@ class SendingToControllerBatchQueue(
 }
 
 class AwaitingMetadataBatchQueue(
-  controlPlane: ControlPlane,
+  storage: TieredStorage,
   scheduler: Scheduler,
   brokerId: Int,
   brokerEpochSupplier: () => Long,
@@ -374,11 +374,10 @@ class AwaitingMetadataBatchQueue(
   ): Unit = {
     AwaitingMetadata.sendBatch(
       states = states,
-      destination = controlPlane,
+      destination = storage,
       brokerId = brokerId,
       brokerEpoch = brokerEpoch,
       onBatchComplete = onBatchComplete
     )
   }
 }
-

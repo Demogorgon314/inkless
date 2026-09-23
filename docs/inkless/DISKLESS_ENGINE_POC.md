@@ -28,7 +28,7 @@ KIP-1163. Transactions, managed replicas, consolidation, classic-to-diskless
 migration, and DeleteRecords are not implemented for the external provider.
 The broker rejects the first four feature combinations or requests through its
 existing diskless checks and the external-engine configuration validation.
-DeleteRecords fails through the existing unavailable-interceptor path; it does
+DeleteRecords fails through the engine capability check; it does
 not truncate Ursa data. The existing share-fetch path is not validated here.
 
 ## Architecture
@@ -55,10 +55,32 @@ Broker metadata updates
 
 The broker keeps one dispatch layer. The integration does not copy UFK's
 `DisklessStorageReplicaManagerSupport` beside Inkless's routing. The default
-adapter creates and owns `AppendHandler`, `FetchHandler`, and
-`FetchOffsetHandler` from `SharedState`, and closes them together. Consolidation
-receives an offset-job factory instead of a reference to the native offset
-handler. Its dedicated background fetch handler stays separate.
+engine creates and owns its request handlers, delete interceptor, retention
+enforcer, file cleaner, topic purger, and shared state. Its optional
+`TieredStorage` service owns the dedicated consolidation reader and external
+metadata operations. Broker code never obtains a native handler, cache, or
+control-plane handle.
+
+`DisklessEngineFactory` assembles native or isolated provider resources at
+broker startup. `ReplicaManager` receives the resulting engine and owns its
+shutdown; the broker closes it if construction fails before ownership transfers.
+The broker stops its scheduler and drains fetchers before closing the engine.
+The engine cancels its scheduled tasks and closes handlers before shared state.
+
+| Boundary | Contract |
+| --- | --- |
+| `append`, `fetch`, `OffsetJob` | Asynchronous record operations; Kafka retains protocol routing and response handling. |
+| `supportsDeleteRecords`, `deleteRecords` | Reject unsupported deletion before touching a local-log leg; return per-partition results or an exceptional future mapped by the broker. |
+| `probeFetch` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
+| `start`, `close` | Engine owns maintenance tasks and resources; startup runs once, and native close is idempotent. |
+| `TieredStorage` | Optional fetch, cross-tier offset, prune, initialize, and repair operations. Kafka owns local-log coordination and retries. |
+| `DisklessTopicLifecycle` | Separate controller service for topic creation, expansion, configuration, deletion, and reconciliation. |
+
+The native tiered-storage metadata calls retain their synchronous behavior.
+Turning them into asynchronous operations requires changing the surrounding
+Kafka coordination paths; this refactor does not make that claim. Ursa returns
+no tiered-storage capability, so it need not emulate Inkless migration or
+consolidation semantics.
 
 `ReplicaManager` retains `InklessMetadataView` for topic routing, leader epochs,
 and cross-tier offset decisions. These broker responsibilities apply regardless
@@ -72,7 +94,7 @@ change a producer's identity after failover.
 
 `OffsetJob` preserves batching and cancellation in the existing ListOffsets
 router. The isolated loader also establishes the provider context classloader
-when invoking returned offset jobs and lifecycle services.
+when invoking returned offset jobs, tiered-storage capabilities, and lifecycle services.
 
 External engines have no native batch-coordinate cache. `DelayedFetch` hands
 waiting to the engine's asynchronous fetch implementation when that cache is
@@ -196,6 +218,9 @@ The core test task assembles and checks the plugin before running. The existing
 native handler, ReplicaManager, offset-router, KafkaApis, configuration,
 metadata-publisher, and delayed-fetch tests cover the affected broker behavior.
 The copied lifecycle tests cover retry, ordering, leadership loss, and sweeps.
+Consolidation and migration tests cover the native tiered-storage adapter.
+Engine tests cover task cancellation and resource closure after a handler fails;
+broker tests cover exceptional plugin deletion results.
 This is targeted validation, not the full Kafka test suite or a performance
 benchmark.
 

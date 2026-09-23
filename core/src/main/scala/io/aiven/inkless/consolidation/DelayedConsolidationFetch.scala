@@ -18,8 +18,8 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.FetchHandler
-import io.aiven.inkless.control_plane.FindBatchRequest
+import io.aiven.inkless.engine.DisklessEngine.Fetcher
+import io.aiven.inkless.engine.DisklessEngine.FetchProbe
 import kafka.server.ReplicaManager
 import kafka.utils.Logging
 import org.apache.kafka.common.TopicIdPartition
@@ -46,7 +46,7 @@ import scala.jdk.CollectionConverters._
 class DelayedConsolidationFetch(
   params: FetchParams,
   fetchInfos: util.Map[TopicIdPartition, FetchRequest.PartitionData],
-  fetchHandler: FetchHandler,
+  fetchHandler: Fetcher,
   replicaManager: ReplicaManager,
   responseCallback: util.Map[TopicIdPartition, FetchPartitionData] => Unit
 ) extends DelayedOperation(params.maxWaitMs) with Logging {
@@ -57,7 +57,7 @@ class DelayedConsolidationFetch(
     s"DelayedConsolidationFetch(numPartitions=${fetchInfos.size}, minBytes=${params.minBytes}, maxWaitMs=${params.maxWaitMs})"
 
   /**
-   * Cheap probe: sum the bytes [[ReplicaManager.findDisklessBatches]] reports across the requested partitions,
+   * Cheap probe: sum the bytes [[ReplicaManager.probeDisklessFetch]] reports across the requested partitions,
    * and force completion if the estimate meets `minBytes`.
    *
    * With the batch coordinate cache enabled this reads only local, this-broker appends, so it can miss
@@ -75,14 +75,14 @@ class DelayedConsolidationFetch(
     if (!initialProbeDone.compareAndSet(false, true)) return false
 
     val requests = fetchInfos.entrySet().asScala.toSeq.map { e =>
-      new FindBatchRequest(e.getKey, e.getValue.fetchOffset, e.getValue.maxBytes)
+      new FetchProbe(e.getKey, e.getValue.fetchOffset, e.getValue.maxBytes)
     }
 
     val maybeFindBatchResponses = try {
-      replicaManager.findDisklessBatches(requests)
+      replicaManager.probeDisklessFetch(requests)
     } catch {
       case e: Throwable =>
-        warn(s"$this partitions=$samplePartitions: error during tryComplete findDisklessBatches; deferring to onComplete", e)
+        warn(s"$this partitions=$samplePartitions: error during tryComplete probeDisklessFetch; deferring to onComplete", e)
         return forceComplete()
     }
 
@@ -92,7 +92,7 @@ class DelayedConsolidationFetch(
     }
 
     if (findBatchResponses.size() != fetchInfos.size) {
-      warn(s"$this partitions=$samplePartitions: findDisklessBatches returned ${findBatchResponses.size()} responses " +
+      warn(s"$this partitions=$samplePartitions: probeDisklessFetch returned ${findBatchResponses.size()} responses " +
         s"for ${fetchInfos.size} requests; deferring to onComplete")
       return forceComplete()
     }
@@ -101,12 +101,11 @@ class DelayedConsolidationFetch(
     var index = 0
     val it = fetchInfos.entrySet().iterator()
     while (it.hasNext && index < findBatchResponses.size()) {
-      val entry = it.next()
-      val req = entry.getValue
+      it.next()
       val resp = findBatchResponses.get(index)
-      resp.errors() match {
+      resp.error() match {
         case Errors.NONE =>
-          accumulated += resp.estimatedByteSize(req.fetchOffset)
+          accumulated += resp.estimatedBytes()
         case _ =>
           // any error short-circuits the wait -- let onComplete surface it through the real fetch
           return forceComplete()

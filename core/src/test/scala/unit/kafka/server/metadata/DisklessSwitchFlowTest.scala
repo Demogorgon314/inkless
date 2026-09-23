@@ -19,6 +19,7 @@ package kafka.server.metadata
 
 import com.yammer.metrics.core.Gauge
 import io.aiven.inkless.control_plane.{ControlPlane, InitDisklessLogResponse => CpInitResponse}
+import io.aiven.inkless.engine.DisklessEnginesTest.nativeTieredStorage
 import kafka.coordinator.transaction.TransactionCoordinator
 import kafka.cluster.Partition
 import kafka.log.LogManager
@@ -942,7 +943,7 @@ class DisklessSwitchFlowTest {
     when(controlPlane.initDisklessLog(any())).thenReturn(util.List.of(CpInitResponse.success()))
     val initDisklessLogManager = new InitDisklessLogManager(
       controllerChannelManager = channelManager,
-      controlPlane = controlPlane,
+      storage = nativeTieredStorage(controlPlane),
       scheduler = scheduler,
       brokerId = config.brokerId,
       brokerEpochSupplier = () => 1L,

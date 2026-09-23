@@ -218,7 +218,7 @@ class KafkaApisTest extends Logging {
       apiVersionManager = apiVersionManager,
       clientMetricsManager = clientMetricsManager,
       groupConfigManager = groupConfigManager,
-      inklessSharedState = inklessSharedState)
+      disklessMetadata = inklessSharedState.map(_.metadata()))
   }
 
   private def setupFeatures(featureVersions: Seq[FeatureVersion]): Unit = {

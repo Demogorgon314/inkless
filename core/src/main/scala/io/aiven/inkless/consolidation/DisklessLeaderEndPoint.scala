@@ -18,7 +18,7 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.FetchHandler
+import io.aiven.inkless.engine.DisklessEngine.Fetcher
 import io.aiven.inkless.engine.DisklessEngine.OffsetJob
 import kafka.server.{KafkaConfig, ReplicaManager, ReplicaQuota}
 import kafka.utils.Logging
@@ -51,7 +51,7 @@ import scala.util.Try
 
 /**
  * Leader endpoint for consolidation fetching from Inkless (object storage) on this broker.
- * [[FetchHandler]] performs the same diskless fetch path as the broker's main fetch pipeline;
+ * [[Fetcher]] performs the same diskless fetch path as the broker's main fetch pipeline;
  * The engine's offset jobs back list-offsets style APIs used by [[kafka.server.AbstractFetcherThread]].
  *
  * ReplicaManager owns the consolidation fetch handler; the diskless engine owns the offset handler.
@@ -59,7 +59,7 @@ import scala.util.Try
  */
 class DisklessLeaderEndPoint(
   brokerEndPoint: BrokerEndPoint,
-  fetchHandler: FetchHandler,
+  fetchHandler: Fetcher,
   createOffsetJob: () => OffsetJob,
   replicaManager: ReplicaManager,
   brokerConfig: KafkaConfig,

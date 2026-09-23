@@ -17,7 +17,7 @@
 
 package kafka.server
 
-import io.aiven.inkless.common.SharedState
+import io.aiven.inkless.control_plane.MetadataView
 import io.aiven.inkless.metadata.InklessTopicMetadataTransformer
 import kafka.coordinator.transaction.{InitProducerIdResult, TransactionCoordinator}
 import kafka.network.RequestChannel
@@ -112,7 +112,7 @@ class KafkaApis(val requestChannel: RequestChannel,
                 val apiVersionManager: ApiVersionManager,
                 val clientMetricsManager: ClientMetricsManager,
                 val groupConfigManager: GroupConfigManager,
-                inklessSharedState: Option[SharedState] = None,
+                disklessMetadata: Option[MetadataView] = None,
                 disklessDeleteRecordsForwarder: Option[DisklessDeleteRecordsForwarder] = None
 ) extends ApiRequestHandler with Logging {
 
@@ -127,15 +127,8 @@ class KafkaApis(val requestChannel: RequestChannel,
     metadataCache, authHelper, config)
   val shareGroupConfigProvider = new ShareGroupConfigProvider(groupConfigManager)
 
-  private val disklessMetadata = inklessSharedState.map(_.metadata()).orElse {
-    if (config.disklessStorageSystemEnabled && config.originals.containsKey("diskless.engine.class.name"))
-      Some(replicaManager.inklessMetadataView())
-    else None
-  }
-  val inklessTopicMetadataTransformer = inklessSharedState
-    .map(s => new InklessTopicMetadataTransformer(s.metadata(), s.config().clientAzListenerMap()))
-    .orElse(disklessMetadata.map(metadata =>
-      new InklessTopicMetadataTransformer(metadata, config.inklessConfig.clientAzListenerMap())))
+  val inklessTopicMetadataTransformer = disklessMetadata.map(metadata =>
+    new InklessTopicMetadataTransformer(metadata, config.inklessConfig.clientAzListenerMap()))
 
   def close(): Unit = {
     aclApis.close()

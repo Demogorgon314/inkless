@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.control_plane.{BatchInfo, BatchMetadata, FindBatchRequest, FindBatchResponse}
+import io.aiven.inkless.engine.DisklessEngine.{FetchProbe, FetchAvailability}
 import kafka.utils.TestUtils
 
 import java.util.{Collections, Optional, OptionalInt, OptionalLong}
@@ -26,7 +26,6 @@ import org.apache.kafka.common.{TopicIdPartition, Uuid}
 import org.apache.kafka.common.errors.{FencedLeaderEpochException, NotLeaderOrFollowerException}
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.record.internal.MemoryRecords
 import org.apache.kafka.common.requests.FetchRequest
 import org.apache.kafka.server.storage.log.{FetchIsolation, FetchParams, FetchPartitionData}
@@ -36,7 +35,7 @@ import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.ArgumentCaptor
-import org.mockito.ArgumentMatchers.{any, anyFloat, anyInt, anyLong}
+import org.mockito.ArgumentMatchers.{any, anyFloat, anyInt}
 import org.mockito.Mockito.{mock, never, times, verify, when}
 
 import java.util.concurrent.CompletableFuture
@@ -391,30 +390,15 @@ class DelayedFetchTest {
         responseCallback = callback
       )
 
-      // Create proper BatchMetadata
-      val batchMetadata = BatchMetadata.of(
-        topicIdPartition,
-        0L, // byteOffset
-        100L, // byteSize
-        endOffset, // baseOffset
-        endOffset + 10, // lastOffset
-        System.currentTimeMillis(), // logAppendTimestamp
-        System.currentTimeMillis(), // batchMaxTimestamp
-        TimestampType.CREATE_TIME
-      )
-
       // Mock successful diskless batch finding with truncation scenario
-      val mockResponse = mock(classOf[FindBatchResponse])
-      when(mockResponse.errors()).thenReturn(Errors.NONE)
-      when(mockResponse.batches()).thenReturn(Collections.singletonList(new BatchInfo(
-        1L, // batchId
-        "test-batch-id", // objectKey
-        batchMetadata
-      )))
+      val mockResponse = mock(classOf[FetchAvailability])
+      when(mockResponse.error()).thenReturn(Errors.NONE)
+      when(mockResponse.hasData()).thenReturn(true)
+      when(mockResponse.partition()).thenReturn(topicIdPartition)
       when(mockResponse.highWatermark()).thenReturn(endOffset) // endOffset < fetchOffset (truncation)
 
       val future = Some(Collections.singletonList(mockResponse))
-      when(replicaManager.findDisklessBatches(any[Seq[FindBatchRequest]])).thenReturn(future)
+      when(replicaManager.probeDisklessFetch(any[Seq[FetchProbe]])).thenReturn(future)
 
       // Mock fetchDisklessMessages for onComplete
       when(replicaManager.fetchParamsWithNewMaxBytes(any[FetchParams], any[Float])).thenAnswer(_.getArgument(0))
@@ -435,8 +419,8 @@ class DelayedFetchTest {
       assertTrue(delayedFetch.isCompleted)
       assertTrue(fetchResultOpt.isDefined)
 
-      // Verify that estimatedByteSize is never called since we hit the truncation case
-      verify(mockResponse, never()).estimatedByteSize(anyLong())
+      // Verify that estimatedBytes is never called since we hit the truncation case
+      verify(mockResponse, never()).estimatedBytes()
     }
 
     @Test
@@ -481,31 +465,16 @@ class DelayedFetchTest {
         responseCallback = callback
       )
 
-      // Create proper BatchMetadata
-      val batchMetadata = BatchMetadata.of(
-        topicIdPartition,
-        0L, // byteOffset
-        100L, // byteSize
-        fetchOffset, // baseOffset
-        fetchOffset + 10, // lastOffset
-        System.currentTimeMillis(), // logAppendTimestamp
-        System.currentTimeMillis(), // batchMaxTimestamp
-        TimestampType.CREATE_TIME
-      )
-
       // Mock successful diskless batch finding
-      val mockResponse = mock(classOf[FindBatchResponse])
-      when(mockResponse.errors()).thenReturn(Errors.NONE)
-      when(mockResponse.batches()).thenReturn(Collections.singletonList(new BatchInfo(
-        1L, // batchId
-        "test-batch-id", // objectKey
-        batchMetadata
-      )))
+      val mockResponse = mock(classOf[FetchAvailability])
+      when(mockResponse.error()).thenReturn(Errors.NONE)
+      when(mockResponse.hasData()).thenReturn(true)
+      when(mockResponse.partition()).thenReturn(topicIdPartition)
       when(mockResponse.highWatermark()).thenReturn(fetchOffset) // fetchOffset == endOffset (no new data)
-      when(mockResponse.estimatedByteSize(fetchOffset)).thenReturn(estimatedBatchSize)
+      when(mockResponse.estimatedBytes()).thenReturn(estimatedBatchSize)
 
       val future = Some(Collections.singletonList(mockResponse))
-      when(replicaManager.findDisklessBatches(any[Seq[FindBatchRequest]])).thenReturn(future)
+      when(replicaManager.probeDisklessFetch(any[Seq[FetchProbe]])).thenReturn(future)
 
       when(replicaManager.readFromLog(
         fetchParams,
@@ -520,9 +489,9 @@ class DelayedFetchTest {
       assertFalse(delayedFetch.isCompleted)
       assertFalse(fetchResultOpt.isDefined)
 
-      // Verify that estimatedByteSize is never called since fetchOffset == endOffset
+      // Verify that estimatedBytes is never called since fetchOffset == endOffset
       verify(replicaManager, never()).fetchDisklessMessages(any[FetchParams], any[Seq[(TopicIdPartition, FetchRequest.PartitionData)]])
-      verify(mockResponse, never()).estimatedByteSize(anyLong())
+      verify(mockResponse, never()).estimatedBytes()
     }
 
     @Test
@@ -568,31 +537,16 @@ class DelayedFetchTest {
         responseCallback = callback
       )
 
-      // Create proper BatchMetadata
-      val batchMetadata = BatchMetadata.of(
-        topicIdPartition,
-        0L, // byteOffset
-        100L, // byteSize
-        fetchOffset, // baseOffset
-        fetchOffset + 10, // lastOffset
-        System.currentTimeMillis(), // logAppendTimestamp
-        System.currentTimeMillis(), // batchMaxTimestamp
-        TimestampType.CREATE_TIME
-      )
-
       // Mock successful diskless batch finding with available data but insufficient bytes
-      val mockResponse = mock(classOf[FindBatchResponse])
-      when(mockResponse.errors()).thenReturn(Errors.NONE)
-      when(mockResponse.batches()).thenReturn(Collections.singletonList(new BatchInfo(
-        1L, // batchId
-        "test-batch-id", // objectKey
-        batchMetadata
-      )))
+      val mockResponse = mock(classOf[FetchAvailability])
+      when(mockResponse.error()).thenReturn(Errors.NONE)
+      when(mockResponse.hasData()).thenReturn(true)
+      when(mockResponse.partition()).thenReturn(topicIdPartition)
       when(mockResponse.highWatermark()).thenReturn(endOffset) // endOffset > fetchOffset (data available)
-      when(mockResponse.estimatedByteSize(fetchOffset)).thenReturn(estimatedBatchSize)
+      when(mockResponse.estimatedBytes()).thenReturn(estimatedBatchSize)
 
       val future = Some(Collections.singletonList(mockResponse))
-      when(replicaManager.findDisklessBatches(any[Seq[FindBatchRequest]])).thenReturn(future)
+      when(replicaManager.probeDisklessFetch(any[Seq[FetchProbe]])).thenReturn(future)
 
       when(replicaManager.readFromLog(
         fetchParams,
@@ -606,8 +560,8 @@ class DelayedFetchTest {
       assertFalse(delayedFetch.isCompleted)
       assertFalse(fetchResultOpt.isDefined)
 
-      // Verify that estimatedByteSize is called since fetchOffset < endOffset
-      verify(mockResponse).estimatedByteSize(fetchOffset)
+      // Verify that estimatedBytes is called since fetchOffset < endOffset
+      verify(mockResponse).estimatedBytes()
     }
 
     @Test
@@ -653,31 +607,16 @@ class DelayedFetchTest {
         responseCallback = callback
       )
 
-      // Create proper BatchMetadata
-      val batchMetadata = BatchMetadata.of(
-        topicIdPartition,
-        0L, // byteOffset
-        100L, // byteSize
-        fetchOffset, // baseOffset
-        fetchOffset + 10, // lastOffset
-        System.currentTimeMillis(), // logAppendTimestamp
-        System.currentTimeMillis(), // batchMaxTimestamp
-        TimestampType.CREATE_TIME
-      )
-
       // Mock successful diskless batch finding with available data
-      val mockResponse = mock(classOf[FindBatchResponse])
-      when(mockResponse.errors()).thenReturn(Errors.NONE)
-      when(mockResponse.batches()).thenReturn(Collections.singletonList(new BatchInfo(
-        1L, // batchId
-        "test-batch-id", // objectKey
-        batchMetadata
-      )))
+      val mockResponse = mock(classOf[FetchAvailability])
+      when(mockResponse.error()).thenReturn(Errors.NONE)
+      when(mockResponse.hasData()).thenReturn(true)
+      when(mockResponse.partition()).thenReturn(topicIdPartition)
       when(mockResponse.highWatermark()).thenReturn(endOffset) // endOffset > fetchOffset (data available)
-      when(mockResponse.estimatedByteSize(fetchOffset)).thenReturn(estimatedBatchSize)
+      when(mockResponse.estimatedBytes()).thenReturn(estimatedBatchSize)
 
       val future = Some(Collections.singletonList(mockResponse))
-      when(replicaManager.findDisklessBatches(any[Seq[FindBatchRequest]])).thenReturn(future)
+      when(replicaManager.probeDisklessFetch(any[Seq[FetchProbe]])).thenReturn(future)
 
       // Mock fetchDisklessMessages for onComplete
       when(replicaManager.fetchParamsWithNewMaxBytes(any[FetchParams], anyFloat())).thenAnswer(_.getArgument(0))
@@ -696,8 +635,8 @@ class DelayedFetchTest {
       assertTrue(delayedFetch.isCompleted)
       assertTrue(fetchResultOpt.isDefined)
 
-      // Verify that estimatedByteSize is called since fetchOffset < endOffset
-      verify(mockResponse).estimatedByteSize(fetchOffset)
+      // Verify that estimatedBytes is called since fetchOffset < endOffset
+      verify(mockResponse).estimatedBytes()
     }
 
     @Test
@@ -955,30 +894,15 @@ class DelayedFetchTest {
         responseCallback = callback
       )
 
-      // Create proper BatchMetadata
-      val batchMetadata = BatchMetadata.of(
-        topicIdPartition,
-        0L, // byteOffset
-        100L, // byteSize
-        fetchOffset, // baseOffset
-        fetchOffset + 10, // lastOffset
-        System.currentTimeMillis(), // logAppendTimestamp
-        System.currentTimeMillis(), // batchMaxTimestamp
-        TimestampType.CREATE_TIME
-      )
-
       // Mock error response from diskless batch finding
-      val mockResponse = mock(classOf[FindBatchResponse])
-      when(mockResponse.errors()).thenReturn(Errors.UNKNOWN_SERVER_ERROR) // Non-NONE error triggers Case C
-      when(mockResponse.batches()).thenReturn(Collections.singletonList(new BatchInfo(
-        1L, // batchId
-        "test-batch-id", // objectKey
-        batchMetadata
-      )))
+      val mockResponse = mock(classOf[FetchAvailability])
+      when(mockResponse.error()).thenReturn(Errors.UNKNOWN_SERVER_ERROR) // Non-NONE error triggers Case C
+      when(mockResponse.hasData()).thenReturn(true)
+      when(mockResponse.partition()).thenReturn(topicIdPartition)
       when(mockResponse.highWatermark()).thenReturn(600L)
 
       val future = Some(Collections.singletonList(mockResponse))
-      when(replicaManager.findDisklessBatches(any[Seq[FindBatchRequest]])).thenReturn(future)
+      when(replicaManager.probeDisklessFetch(any[Seq[FetchProbe]])).thenReturn(future)
 
       // Mock fetchDisklessMessages for onComplete
       when(replicaManager.fetchParamsWithNewMaxBytes(any[FetchParams], anyFloat())).thenAnswer(_.getArgument(0))
@@ -997,8 +921,8 @@ class DelayedFetchTest {
       assertTrue(delayedFetch.isCompleted)
       assertTrue(fetchResultOpt.isDefined)
 
-      // Verify that estimatedByteSize is never called since we hit the error case
-      verify(mockResponse, never()).estimatedByteSize(anyLong())
+      // Verify that estimatedBytes is never called since we hit the error case
+      verify(mockResponse, never()).estimatedBytes()
       verify(mockResponse, never()).highWatermark()
     }
 

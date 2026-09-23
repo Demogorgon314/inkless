@@ -38,10 +38,11 @@ import org.apache.kafka.common.config.TopicConfig
 import org.apache.kafka.common.{DirectoryId, IsolationLevel, Node, TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.compress.Compression
-import org.apache.kafka.common.errors.{NotLeaderOrFollowerException, OffsetOutOfRangeException, UnknownTopicOrPartitionException}
+import org.apache.kafka.common.errors.{KafkaStorageException, NotLeaderOrFollowerException, OffsetOutOfRangeException, UnknownTopicOrPartitionException}
 import org.apache.kafka.common.message.ListOffsetsRequestData.{ListOffsetsPartition, ListOffsetsTopic}
 import org.apache.kafka.common.message.ListOffsetsResponseData.{ListOffsetsPartitionResponse, ListOffsetsTopicResponse}
 import org.apache.kafka.common.message.DeleteRecordsResponseData
+import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult
 import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.{OffsetForLeaderPartition, OffsetForLeaderTopic}
 import org.apache.kafka.common.metadata.{PartitionChangeRecord, PartitionRecord, TopicRecord}
 import org.apache.kafka.common.metrics.Metrics
@@ -189,6 +190,16 @@ class ReplicaManagerInklessTest {
         assertNotNull(offsets)
         assertEquals(123L, offsets.iterator().next().partitions().get(0).offset())
         verify(offsetJob).start()
+
+        when(engine.supportsDeleteRecords()).thenReturn(true)
+        when(engine.deleteRecords(any())).thenReturn(
+          CompletableFuture.failedFuture(new KafkaStorageException("Storage unavailable")))
+        var deleteResponse: Map[TopicPartition, DeleteRecordsPartitionResult] = Map.empty
+        replicaManager.deleteRecords(0L, Map(disklessTopicPartition.topicPartition() -> 10L),
+          response => deleteResponse = response)
+        assertEquals(Errors.KAFKA_STORAGE_ERROR.code(),
+          deleteResponse(disklessTopicPartition.topicPartition()).errorCode())
+        verify(engine).deleteRecords(util.Map.of(disklessTopicPartition.topicPartition(), java.lang.Long.valueOf(10L)))
         assertTrue(appendConstructor.constructed().isEmpty)
         assertTrue(fetchConstructor.constructed().isEmpty)
         assertTrue(offsetConstructor.constructed().isEmpty)
@@ -8891,7 +8902,9 @@ class ReplicaManagerInklessTest {
       metadataCache = new KRaftMetadataCache(config.brokerId, () => KRaftVersion.KRAFT_VERSION_0),
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = alterPartitionManager,
-      inklessSharedState = if (inklessSharedStateEnabled) Some(sharedState) else None,
+      disklessEngine = if (engineClassName.isDefined) {
+        Some(DisklessEngines.load(config.originals, () => DisklessEngineFactory.nativeEngine(config, sharedState)))
+      } else if (inklessSharedStateEnabled) Some(DisklessEngineFactory.nativeEngine(config, sharedState)) else None,
       inklessMetadataView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,
       delayedFetchPurgatoryParam = delayedFetchPurgatory,

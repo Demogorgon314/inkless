@@ -18,7 +18,8 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, FetchOffsetHandler}
+import io.aiven.inkless.consume.{ConcatenatedRecords, FetchOffsetHandler}
+import io.aiven.inkless.engine.DisklessEngine.{Fetcher, FetchAvailability}
 import kafka.cluster.Partition
 import kafka.server._
 import kafka.server.metadata.InklessMetadataView
@@ -109,10 +110,11 @@ class ConsolidationFetcherThreadTest {
       BatchMetadata.of(topicIdPartition, 0L, 64L * 1024 * 1024, 0L, 9L,
         System.currentTimeMillis(), System.currentTimeMillis(), TimestampType.CREATE_TIME))
     val probeResponse = FindBatchResponse.success(util.List.of(probeBatch), 0L, highWatermark)
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(util.List.of(probeResponse)))
+    when(replicaManager.probeDisklessFetch(any())).thenReturn(Some(util.List.of(new FetchAvailability(topicIdPartition, probeResponse.errors(), true,
+      probeResponse.highWatermark(), probeResponse.estimatedByteSize(0L)))))
 
     // The budgeted fetch served this partition nothing: the aggregate budget went to other partitions.
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
     when(fetchHandler.handle(any(), any())).thenReturn(CompletableFuture.completedFuture(
       util.Map.of(topicIdPartition, new FetchPartitionData(
         Errors.NONE, highWatermark, 0L, MemoryRecords.EMPTY,
@@ -338,7 +340,7 @@ class ConsolidationFetcherThreadTest {
     when(replicaManager.disklessLeaderEpoch(topicPartition)).thenReturn(disklessLeaderEpoch)
 
     // Real diskless leader endpoint backing OffsetsForLeaderEpoch for the consolidating follower.
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
     val fetchOffsetHandler = mock(classOf[FetchOffsetHandler])
     val job = mock(classOf[FetchOffsetHandler.Job])
     when(fetchOffsetHandler.createJob()).thenReturn(job)
@@ -660,7 +662,7 @@ class ConsolidationFetcherThreadTest {
       config,
       mock(classOf[ReplicaManager]),
       mock(classOf[ReplicationQuotaManager]),
-      mock(classOf[FetchHandler]),
+      mock(classOf[Fetcher]),
       () => mock(classOf[FetchOffsetHandler.Job]),
       Some(metrics)
     )

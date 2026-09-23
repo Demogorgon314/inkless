@@ -18,7 +18,9 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.FetchHandler
+import io.aiven.inkless.engine.DisklessEngine.{Fetcher, FetchProbe, FetchAvailability}
+import org.mockito.stubbing.Answer
+import scala.jdk.CollectionConverters._
 import io.aiven.inkless.control_plane.{BatchInfo, BatchMetadata, FindBatchResponse}
 import kafka.server.ReplicaManager
 import org.apache.kafka.common.{TopicIdPartition, Uuid}
@@ -69,6 +71,17 @@ class DelayedConsolidationFetchTest {
     map
   }
 
+  private def probe(responses: util.List[FindBatchResponse]): Answer[Option[util.List[FetchAvailability]]] =
+    invocation => {
+      val requests = invocation.getArgument[Seq[FetchProbe]](0)
+      Some(responses.asScala.zipWithIndex.map { case (response, index) =>
+        val request = requests(math.min(index, requests.size - 1))
+        new FetchAvailability(request.partition(), response.errors(),
+          response.errors() == Errors.NONE && !response.batches().isEmpty,
+          response.highWatermark(), response.estimatedByteSize(request.offset()))
+      }.asJava)
+    }
+
   private def batch(baseOffset: Long, lastOffset: Long, byteSize: Long): BatchInfo =
     batchFor(tip, baseOffset, lastOffset, byteSize)
 
@@ -100,12 +113,12 @@ class DelayedConsolidationFetchTest {
   @Test
   def tryCompleteCompletesWhenAccumulatedAtLeastMinBytes(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     // control plane returns 2 batches of 500 bytes each, totaling 1000 bytes -- above minBytes
     val batches = util.List.of(batch(0, 4, 500), batch(5, 9, 500))
     val response = util.List.of(FindBatchResponse.success(batches, 0L, 100L))
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(response))
+    when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
@@ -127,11 +140,11 @@ class DelayedConsolidationFetchTest {
   @Test
   def tryCompleteCompletesWhenAccumulatedAcrossPartitionsReachesMinBytes(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     val firstResponse = FindBatchResponse.success(util.List.of(batchFor(tip, 0, 4, 100)), 0L, 100L)
     val secondResponse = FindBatchResponse.success(util.List.of(batchFor(secondTip, 0, 4, 125)), 0L, 100L)
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(util.List.of(firstResponse, secondResponse)))
+    when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(util.List.of(firstResponse, secondResponse)))
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData, secondTip, emptyFetchPartitionData)))
 
@@ -146,16 +159,16 @@ class DelayedConsolidationFetchTest {
 
     assertTrue(op.tryComplete(), "tryComplete should use aggregate bytes across partitions")
     assertEquals(2, captured.get(1, TimeUnit.SECONDS).size)
-    verify(replicaManager, times(1)).findDisklessBatches(any())
+    verify(replicaManager, times(1)).probeDisklessFetch(any())
   }
 
   @Test
   def tryCompleteForcesCompletionWhenFindBatchResponseCountDiffers(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     val firstResponse = FindBatchResponse.success(util.List.of(batchFor(tip, 0, 4, 100)), 0L, 100L)
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(util.List.of(firstResponse)))
+    when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(util.List.of(firstResponse)))
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData, secondTip, emptyFetchPartitionData)))
 
@@ -176,11 +189,11 @@ class DelayedConsolidationFetchTest {
   @Test
   def tryCompleteParksWhenBelowMinBytes(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     // Empty control-plane response -- accumulated = 0, below minBytes
     val response = util.List.of(FindBatchResponse.success(util.List.of(), 0L, 100L))
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(response))
+    when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
 
     val op = new DelayedConsolidationFetch(
       params = newFetchParams(maxWaitMs = 1000, minBytes = 1),
@@ -193,17 +206,17 @@ class DelayedConsolidationFetchTest {
     assertFalse(op.tryComplete(), "tryComplete should park when bytes < minBytes")
     assertFalse(op.tryComplete(), "duplicate purgatory registration check should not re-probe the control plane")
     assertFalse(op.isCompleted, "operation must remain in purgatory")
-    verify(replicaManager, times(1)).findDisklessBatches(any())
+    verify(replicaManager, times(1)).probeDisklessFetch(any())
     verify(fetchHandler, times(0)).handle(any(), any())
   }
 
   @Test
   def expirationCompletesParkedFetchViaFinalFetch(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     val response = util.List.of(FindBatchResponse.success(util.List.of(), 0L, 100L))
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(response))
+    when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
@@ -220,18 +233,18 @@ class DelayedConsolidationFetchTest {
     op.run()
 
     assertEquals(1, captured.get(1, TimeUnit.SECONDS).size)
-    verify(replicaManager, times(1)).findDisklessBatches(any())
+    verify(replicaManager, times(1)).probeDisklessFetch(any())
     verify(fetchHandler, times(1)).handle(any(), any())
   }
 
   @Test
   def tryCompleteForcesCompletionOnError(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     // control plane returns OFFSET_OUT_OF_RANGE -- should short-circuit the wait
     val response = util.List.of(FindBatchResponse.offsetOutOfRange(0L, 100L))
-    when(replicaManager.findDisklessBatches(any())).thenReturn(Some(response))
+    when(replicaManager.probeDisklessFetch(any())).thenAnswer(probe(response))
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
@@ -250,9 +263,9 @@ class DelayedConsolidationFetchTest {
   @Test
   def tryCompleteForcesCompletionWhenFindDisklessBatchesThrows(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
-    when(replicaManager.findDisklessBatches(any())).thenThrow(new RuntimeException("control plane down"))
+    when(replicaManager.probeDisklessFetch(any())).thenThrow(new RuntimeException("control plane down"))
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of(tip, emptyFetchPartitionData)))
 
@@ -272,7 +285,7 @@ class DelayedConsolidationFetchTest {
   @Test
   def emptyFetchInfosCompletesImmediately(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
     when(fetchHandler.handle(any(), any()))
       .thenReturn(CompletableFuture.completedFuture(util.Map.of[TopicIdPartition, FetchPartitionData]()))
 
@@ -290,7 +303,7 @@ class DelayedConsolidationFetchTest {
   @Test
   def onCompleteSurfacesPerPartitionErrorsOnFailure(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     val failed = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
     failed.completeExceptionally(new RuntimeException("storage down"))
@@ -315,7 +328,7 @@ class DelayedConsolidationFetchTest {
   @Test
   def onCompleteDoesNotBlockOnIncompleteFetchFuture(): Unit = {
     val replicaManager = mock(classOf[ReplicaManager])
-    val fetchHandler = mock(classOf[FetchHandler])
+    val fetchHandler = mock(classOf[Fetcher])
 
     val pending = new CompletableFuture[util.Map[TopicIdPartition, FetchPartitionData]]()
     when(fetchHandler.handle(any(), any())).thenReturn(pending)

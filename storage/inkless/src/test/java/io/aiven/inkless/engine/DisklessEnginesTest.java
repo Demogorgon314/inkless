@@ -23,27 +23,52 @@ import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
+import org.apache.kafka.server.util.Scheduler;
 
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URL;
+import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledFuture;
 
+import io.aiven.inkless.common.SharedState;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
+import io.aiven.inkless.control_plane.ControlPlane;
+import io.aiven.inkless.delete.DeleteRecordsInterceptor;
+import io.aiven.inkless.delete.FileCleaner;
+import io.aiven.inkless.delete.RetentionEnforcer;
+import io.aiven.inkless.delete.TopicPurger;
 import io.aiven.inkless.produce.AppendHandler;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class DisklessEnginesTest {
+    public static DisklessEngine.TieredStorage nativeTieredStorage(ControlPlane controlPlane) {
+        var state = mock(SharedState.class);
+        when(state.controlPlane()).thenReturn(controlPlane);
+        return new InklessTieredStorage(state, Optional.empty());
+    }
+
     @Test
     public void sharesPlatformAndSpiButDoesNotLeakMissingPrivateClassesFromBroker() throws Exception {
         try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader())) {
@@ -65,6 +90,84 @@ public class DisklessEnginesTest {
         assertSame(failure, assertThrows(IOException.class, engine::close));
         verify(fetch).close();
         verify(offsets).close();
+    }
+
+    @Test
+    public void constructionFailureClosesPreviouslyCreatedHandlers() throws IOException {
+        var state = mock(SharedState.class);
+        try (var append = mockConstruction(AppendHandler.class);
+             var fetch = mockConstruction(FetchHandler.class);
+             var offsets = mockConstruction(FetchOffsetHandler.class, (handler, context) -> {
+                 throw new IllegalStateException("Cannot create offset handler");
+             })) {
+            assertThrows(RuntimeException.class, () -> new InklessDisklessEngine(state));
+            verify(append.constructed().get(0)).close();
+            verify(fetch.constructed().get(0)).close();
+            // The factory still owns state when the engine constructor fails.
+            verify(state, never()).close();
+            assertEquals(0, offsets.constructed().size());
+        }
+    }
+
+    @Test
+    public void closesMaintenanceAndStateEvenWhenAHandlerFails() throws IOException {
+        var state = mock(SharedState.class, RETURNS_DEEP_STUBS);
+        when(state.config().fileCleanerInterval()).thenReturn(Duration.ofSeconds(1));
+        when(state.config().topicPurgerInterval()).thenReturn(Duration.ofSeconds(1));
+        when(state.config().crossTierLogStartReportInterval()).thenReturn(Duration.ofSeconds(1));
+        var scheduler = mock(Scheduler.class);
+        var task = mock(ScheduledFuture.class);
+        doReturn(task).when(scheduler).schedule(anyString(), any(), anyLong(), anyLong());
+        try (var append = mockConstruction(AppendHandler.class);
+             var fetch = mockConstruction(FetchHandler.class);
+             var offsets = mockConstruction(FetchOffsetHandler.class);
+             var deletes = mockConstruction(DeleteRecordsInterceptor.class);
+             var retention = mockConstruction(RetentionEnforcer.class);
+             var cleaner = mockConstruction(FileCleaner.class);
+             var purger = mockConstruction(TopicPurger.class)) {
+            var engine = new InklessDisklessEngine(state);
+            engine.start(scheduler, 0L);
+            var failure = new IOException("Append close failed");
+            doThrow(failure).when(append.constructed().get(0)).close();
+            assertSame(failure, assertThrows(IOException.class, engine::close));
+            verify(task, times(4)).cancel(false);
+            verify(fetch.constructed().get(0)).close();
+            verify(offsets.constructed().get(0)).close();
+            verify(deletes.constructed().get(0)).close();
+            verify(retention.constructed().get(0)).close();
+            verify(cleaner.constructed().get(0)).close();
+            verify(purger.constructed().get(0)).close();
+            verify(state).close();
+            engine.close();
+            verify(state).close();
+            assertThrows(IllegalStateException.class, () -> engine.start(scheduler, 0L));
+        }
+    }
+
+    @Test
+    public void tieredStorageCallsUsePluginContextAndRestoreItAfterFailure() throws Exception {
+        var original = Thread.currentThread().getContextClassLoader();
+        var delegate = mock(DisklessEngine.class);
+        var storage = mock(DisklessEngine.TieredStorage.class);
+        when(delegate.tieredStorage()).thenReturn(Optional.of(storage));
+        try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader());
+             var engine = DisklessClassLoaderContext.leased(DisklessEngine.class, delegate,
+                 DisklessClassLoaderRegistry.acquire(new URL[0], loader))) {
+            when(storage.cleanupIntervalMs()).thenAnswer(invocation -> {
+                assertSame(loader, Thread.currentThread().getContextClassLoader());
+                return 100L;
+            });
+            when(storage.repairLog(any(), anyLong())).thenAnswer(invocation -> {
+                assertSame(loader, Thread.currentThread().getContextClassLoader());
+                throw new IllegalStateException("Storage unavailable");
+            });
+            var capability = engine.tieredStorage().orElseThrow();
+            assertEquals(100L, capability.cleanupIntervalMs());
+            assertSame(original, Thread.currentThread().getContextClassLoader());
+            assertThrows(IllegalStateException.class, () -> capability.repairLog(null, 0L));
+            assertSame(original, Thread.currentThread().getContextClassLoader());
+        }
+        verify(delegate).close();
     }
 
     @Test

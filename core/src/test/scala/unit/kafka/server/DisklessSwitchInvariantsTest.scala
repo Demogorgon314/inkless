@@ -247,7 +247,7 @@ class DisklessSwitchInvariantsTest {
       metadataCache = new KRaftMetadataCache(config.brokerId, () => KRaftVersion.KRAFT_VERSION_0),
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = mock(classOf[AlterPartitionManager]),
-      inklessSharedState = Some(sharedState),
+      disklessEngine = Some(DisklessEngineFactory.nativeEngine(config, sharedState)),
       inklessMetadataView = Some(inklessMetadata),
     ) {
       override protected def createReplicaFetcherManager(

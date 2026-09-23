@@ -21,6 +21,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DisklessClassLoaderContext {
@@ -114,6 +115,13 @@ final class DisklessClassLoaderContext {
                     new Class<?>[] {DisklessEngine.OffsetJob.class},
                     (jobProxy, jobMethod, jobArgs) -> call(lease.classLoader(),
                         () -> DisklessClassLoaderContext.invoke(jobMethod, result, jobArgs)));
+            }
+            if (result instanceof Optional<?> optional &&
+                optional.orElse(null) instanceof DisklessEngine.TieredStorage storage) {
+                return Optional.of(Proxy.newProxyInstance(DisklessEngine.TieredStorage.class.getClassLoader(),
+                    new Class<?>[] {DisklessEngine.TieredStorage.class},
+                    (storageProxy, storageMethod, storageArgs) -> call(lease.classLoader(),
+                        () -> DisklessClassLoaderContext.invoke(storageMethod, storage, storageArgs))));
             }
             if (result instanceof DisklessTopicLifecycle) {
                 return Proxy.newProxyInstance(DisklessTopicLifecycle.class.getClassLoader(),

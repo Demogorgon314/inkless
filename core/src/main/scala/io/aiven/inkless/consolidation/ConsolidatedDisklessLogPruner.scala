@@ -18,7 +18,8 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.control_plane.{ControlPlane, PruneDisklessLogsError, PruneDisklessLogsRequest}
+import io.aiven.inkless.engine.DisklessEngine.TieredStorage
+import org.apache.kafka.common.protocol.Errors
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager
 import kafka.server.metadata.InklessMetadataView
@@ -26,11 +27,11 @@ import kafka.utils.Logging
 import org.apache.kafka.common.TopicIdPartition
 import org.apache.kafka.metadata.PartitionRegistration
 
-import scala.jdk.CollectionConverters.{CollectionHasAsScala, SeqHasAsJava}
+import scala.jdk.CollectionConverters._
 
 class ConsolidatedDisklessLogPruner(replicaManager: ReplicaManager,
                                     inklessMetadataView: InklessMetadataView,
-                                    controlPlane: ControlPlane) extends Runnable with Logging {
+                                    storage: TieredStorage) extends Runnable with Logging {
 
   override def run(): Unit = {
     // Read the classic-to-diskless start offset once per partition and thread it through, so the
@@ -54,25 +55,25 @@ class ConsolidatedDisklessLogPruner(replicaManager: ReplicaManager,
             } else {
               safePruneOffset(partition, seal, highestRemoteOffset).map { safeHighestRemoteOffset =>
                 val topicIdPartition = new TopicIdPartition(topicId, partition.topicPartition)
-                new PruneDisklessLogsRequest(topicIdPartition, safeHighestRemoteOffset)
+                topicIdPartition -> java.lang.Long.valueOf(safeHighestRemoteOffset)
               }
             }
           }
         }
-      }.toSeq.asJava
+      }.toMap.asJava
     if (!requests.isEmpty) {
-      controlPlane.pruneDisklessLogs(requests).asScala.foreach { pruneDisklessLogsResponse =>
-        if (pruneDisklessLogsResponse.error != PruneDisklessLogsError.NONE) {
+      storage.prune(requests).asScala.foreach { case (topicIdPartition, result) =>
+        if (result.error() != Errors.NONE) {
           logger.warn("Prune diskless logs did not apply for {} (control plane reported {})",
-            pruneDisklessLogsResponse.topicIdPartition,
-            pruneDisklessLogsResponse.error)
+            topicIdPartition,
+            result.error())
         } else {
-          replicaManager.getPartitionOrError(pruneDisklessLogsResponse.topicIdPartition.topicPartition) match {
+          replicaManager.getPartitionOrError(topicIdPartition.topicPartition) match {
             case Right(partition) =>
-              val newDisklessLogStart = pruneDisklessLogsResponse.disklessLogStartOffset
+              val newDisklessLogStart = result.offset()
               partition.maybeAdvanceConsolidationPruneFloor(newDisklessLogStart)
             case Left(error) => logger.warn("Couldn't update diskless start offset for {} due to: {}",
-              pruneDisklessLogsResponse.topicIdPartition.topicPartition,
+              topicIdPartition.topicPartition,
               error.message
             )
           }

@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.control_plane.{ControlPlane, InitDisklessLogProducerState => CpProducerState, InitDisklessLogResponse => CpInitResponse}
+import io.aiven.inkless.engine.DisklessEngine.{TieredStorage, ProducerState}
 import kafka.cluster.Partition
 import org.apache.kafka.clients.ClientResponse
 import org.apache.kafka.common.{TopicPartition, Uuid}
@@ -50,7 +50,7 @@ class InitDisklessLogManagerTest {
   private val tp0 = new TopicPartition("test-topic", 0)
 
   private var channelManager: MockInitDisklessLogChannelManager = _
-  private var controlPlane: ControlPlane = _
+  private var controlPlane: TieredStorage = _
   private var mockTime: MockTime = _
   private var scheduler: MockScheduler = _
   private var manager: InitDisklessLogManager = _
@@ -59,13 +59,13 @@ class InitDisklessLogManagerTest {
   @BeforeEach
   def setUp(): Unit = {
     channelManager = new MockInitDisklessLogChannelManager()
-    controlPlane = mock(classOf[ControlPlane])
+    controlPlane = mock(classOf[TieredStorage])
     mockTime = new MockTime()
     scheduler = new MockScheduler(mockTime)
     listenersByTp = mutable.Map.empty
     manager = new InitDisklessLogManager(
       controllerChannelManager = channelManager,
-      controlPlane = controlPlane,
+      storage = controlPlane,
       scheduler = scheduler,
       brokerId = brokerId,
       brokerEpochSupplier = () => brokerEpoch,
@@ -1269,26 +1269,26 @@ class InitDisklessLogManagerTest {
   @Test
   def testMetadataAppliedCallsControlPlaneAndRemovesTracking(): Unit = {
     val partition = mockPartition(hw = 100, leo = 100)
-    when(controlPlane.initDisklessLog(any())).thenReturn(util.List.of(CpInitResponse.success()))
+    when(controlPlane.initializeLogs(any())).thenReturn(util.List.of(Errors.NONE))
 
     manager.initOnControlPlane(
       partition = partition,
       topicId = topicId,
       topicName = tp0.topic(),
       classicToDisklessStartOffset = 100L,
-      producerStates = util.List.of(new CpProducerState(1L, 0.toShort, 0, 1, 100L, 1000L))
+      producerStates = util.List.of(new ProducerState(1L, 0.toShort, 0, 1, 100L, 1000L))
     )
 
     fireLinger()
 
-    verify(controlPlane).initDisklessLog(any())
+    verify(controlPlane).initializeLogs(any())
     assertTrue(manager.getTrackedPartitions.isEmpty)
   }
 
   @Test
   def testMetadataAppliedAlreadyInitializedIsTerminalSuccess(): Unit = {
     val partition = mockPartition(hw = 100, leo = 100)
-    when(controlPlane.initDisklessLog(any())).thenReturn(util.List.of(CpInitResponse.alreadyInitialized()))
+    when(controlPlane.initializeLogs(any())).thenReturn(util.List.of(Errors.INVALID_REQUEST))
 
     manager.initOnControlPlane(
       partition = partition,
@@ -1300,16 +1300,16 @@ class InitDisklessLogManagerTest {
 
     fireLinger()
 
-    verify(controlPlane).initDisklessLog(any())
+    verify(controlPlane).initializeLogs(any())
     assertTrue(manager.getTrackedPartitions.isEmpty)
   }
 
   @Test
   def testMetadataAppliedRetriableErrorSchedulesRetry(): Unit = {
     val partition = mockPartition(hw = 100, leo = 100)
-    when(controlPlane.initDisklessLog(any()))
-      .thenReturn(util.List.of(new CpInitResponse(Errors.NOT_CONTROLLER)))
-      .thenReturn(util.List.of(CpInitResponse.success()))
+    when(controlPlane.initializeLogs(any()))
+      .thenReturn(util.List.of(Errors.NOT_CONTROLLER))
+      .thenReturn(util.List.of(Errors.NONE))
 
     manager.initOnControlPlane(
       partition = partition,
@@ -1321,17 +1321,17 @@ class InitDisklessLogManagerTest {
 
     fireLinger()
     assertState[AwaitingMetadata](tp0)
-    verify(controlPlane, times(1)).initDisklessLog(any())
+    verify(controlPlane, times(1)).initializeLogs(any())
 
     fireRetry()
-    verify(controlPlane, times(2)).initDisklessLog(any())
+    verify(controlPlane, times(2)).initializeLogs(any())
     assertTrue(manager.getTrackedPartitions.isEmpty)
   }
 
   @Test
   def testMetadataAppliedRepeatedCallbacksAreDeduplicated(): Unit = {
     val partition = mockPartition(hw = 100, leo = 100)
-    when(controlPlane.initDisklessLog(any())).thenReturn(util.List.of(CpInitResponse.success()))
+    when(controlPlane.initializeLogs(any())).thenReturn(util.List.of(Errors.NONE))
 
     manager.initOnControlPlane(
       partition = partition,
@@ -1350,7 +1350,7 @@ class InitDisklessLogManagerTest {
 
     fireLinger()
 
-    verify(controlPlane, times(1)).initDisklessLog(any())
+    verify(controlPlane, times(1)).initializeLogs(any())
     assertTrue(manager.getTrackedPartitions.isEmpty)
   }
 }

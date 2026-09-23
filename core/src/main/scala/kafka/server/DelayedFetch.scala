@@ -18,7 +18,7 @@
 package kafka.server
 
 import com.yammer.metrics.core.Meter
-import io.aiven.inkless.control_plane.FindBatchRequest
+import io.aiven.inkless.engine.DisklessEngine.FetchProbe
 import kafka.utils.Logging
 
 import java.util.concurrent.{CompletableFuture, TimeUnit}
@@ -186,17 +186,17 @@ class DelayedFetch(
   private def tryCompleteDiskless(fetchPartitionStatus: util.LinkedHashMap[TopicIdPartition, FetchPartitionStatus]): Option[Long] = {
     var accumulatedSize = 0L
     val fetchPartitionStatusMap = fetchPartitionStatus.asScala
-    // This probe is unbudgeted, unlike the real fetch in onComplete: findDisklessBatches reads the local
+    // This probe is unbudgeted, unlike the real fetch in onComplete: probeDisklessFetch reads the local
     // batch-coordinate cache (the default) or, with the cache disabled, passes maxBytes = Int.MaxValue to
     // find_batches. Neither applies a global budget, so request order carries no meaning here -- it is only
     // on the budgeted path that order decides who gets served, and there the Seq must stay ordered.
     val requests = fetchPartitionStatusMap.map { case (topicIdPartition, fetchStatus) =>
-      new FindBatchRequest(topicIdPartition, fetchStatus.startOffsetMetadata.messageOffset, fetchStatus.fetchInfo.maxBytes)
+      new FetchProbe(topicIdPartition, fetchStatus.startOffsetMetadata.messageOffset, fetchStatus.fetchInfo.maxBytes)
     }
     if (requests.isEmpty) return Some(0)
 
     val response = try {
-      replicaManager.findDisklessBatches(requests.toSeq)
+      replicaManager.probeDisklessFetch(requests.toSeq)
     } catch {
       case e: Throwable =>
         error("Error while trying to find diskless batches on delayed fetch.", e)
@@ -207,11 +207,11 @@ class DelayedFetch(
     if (response.isEmpty) return None
 
     response.get.asScala.foreach { r =>
-      r.errors() match {
+      r.error() match {
         case Errors.NONE =>
-          if (r.batches().size() > 0) {
+          if (r.hasData()) {
             // Gather topic id partition from first batch. Same for all batches in the response.
-            val topicIdPartition = r.batches().get(0).metadata().topicIdPartition()
+            val topicIdPartition = r.partition()
             val endOffset = r.highWatermark()
 
             val fetchPartitionStatus = fetchPartitionStatusMap.get(topicIdPartition)
@@ -229,7 +229,7 @@ class DelayedFetch(
               debug(s"Satisfying fetch $this since it is fetching later segments of partition $topicIdPartition.")
               return None  // Case A
             } else if (fetchOffset.messageOffset < endOffset) {
-              val bytesAvailable = r.estimatedByteSize(fetchOffset.messageOffset)
+              val bytesAvailable = r.estimatedBytes()
               accumulatedSize += bytesAvailable // Case B: accumulate the size of the batches
             } // Case D: same as fetchOffset == endOffset, no new data available
           }
