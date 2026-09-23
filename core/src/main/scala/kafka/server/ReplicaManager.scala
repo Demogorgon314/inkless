@@ -55,7 +55,8 @@ import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.utils.{Exit, Time, Utils}
 import org.apache.kafka.coordinator.transaction.{AddPartitionsToTxnConfig, TransactionLogConfig}
-import org.apache.kafka.image.{LocalReplicaChanges, MetadataImage, TopicsDelta}
+import org.apache.kafka.image.{ConfigurationsDelta, LocalReplicaChanges, MetadataImage, TopicsDelta}
+import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.logger.StateChangeLogger
 import org.apache.kafka.metadata.{KRaftMetadataCache, LeaderAndIsr, MetadataCache, PartitionRegistration}
 import org.apache.kafka.metadata.LeaderConstants.NO_LEADER
@@ -267,12 +268,21 @@ class ReplicaManager(val config: KafkaConfig,
   private lazy val inklessAppendHandler: Option[AppendHandler] = inklessSharedState.map(new AppendHandler(_))
   private lazy val inklessFetchHandler: Option[FetchHandler] = inklessSharedState.map(new FetchHandler(_))
   private lazy val inklessFetchOffsetHandler: Option[FetchOffsetHandler] = inklessSharedState.map(new FetchOffsetHandler(_))
-  private val disklessEngine: Option[DisklessEngine] = inklessSharedState.map { _ =>
-    require(!config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG) || !config.disklessManagedReplicasEnabled,
-      "Custom diskless engines do not support managed replicas, classic-to-diskless switching, or consolidation in this PoC")
-    DisklessEngines.load(config.originals, () => new InklessDisklessEngine(
-      inklessAppendHandler.get, inklessFetchHandler.get, inklessFetchOffsetHandler.get))
-  }
+  private val disklessEngine: Option[DisklessEngine] =
+    if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
+      require(!config.disklessManagedReplicasEnabled,
+        "Custom diskless engines do not support managed replicas, classic-to-diskless switching, or consolidation")
+      val context = new DisklessEngine.Context(time, config.brokerId, brokerTopicStats,
+        config.extractLogConfigMap,
+        topic => _inklessMetadataView.getTopicId(topic),
+        topic => _inklessMetadataView.getTopicConfig(topic).originals.asScala.map { case (k, v) => k -> v.toString }.asJava,
+        topic => metadataCache.numPartitions(topic).map(n => OptionalInt.of(n)).orElse(OptionalInt.empty()),
+        () => metadataCache.asInstanceOf[KRaftMetadataCache].currentImage().highestOffsetAndEpoch().offset())
+      Some(DisklessEngines.load(config.originals, () => throw new IllegalStateException("Missing engine class"), context))
+    } else {
+      inklessSharedState.map(_ => new InklessDisklessEngine(
+        inklessAppendHandler.get, inklessFetchHandler.get, inklessFetchOffsetHandler.get))
+    }
   private val disklessFetchOffsetRouter = new DisklessFetchOffsetRouter(
     _inklessMetadataView,
     config.disklessManagedReplicasEnabled,
@@ -2781,7 +2791,7 @@ class ReplicaManager(val config: KafkaConfig,
       return
     }
 
-    inklessSharedState match {
+    disklessEngine match {
       case None =>
         if (disklessFetchInfos.nonEmpty || consolidatingLocalFetchSupplements.nonEmpty) {
           val disklessTopics = disklessFetchInfos.map(_._1.topic()).distinct
@@ -3825,6 +3835,10 @@ class ReplicaManager(val config: KafkaConfig,
    * @param newImage        The new metadata image.
    */
   def applyDelta(delta: TopicsDelta, newImage: MetadataImage): Unit = {
+    delta.deletedTopicIds().forEach { id =>
+      val topic = delta.image().getTopic(id)
+      if (topic != null) disklessEngine.foreach(_.onTopicDeleted(topic.name(), id))
+    }
     // Before taking the lock, compute the local changes
     val localChanges = delta.localChanges(config.nodeId)
     val metadataVersion = newImage.features().metadataVersionOrThrow()
@@ -3886,6 +3900,19 @@ class ReplicaManager(val config: KafkaConfig,
     }
 
     initDisklessLogOnControlPlane(delta, localChanges.leaders.asScala)
+  }
+
+  def updateDisklessTopicConfigs(delta: ConfigurationsDelta, newImage: MetadataImage): Unit = {
+    disklessEngine.foreach { engine =>
+      delta.changes().keySet().forEach { resource =>
+        val topic = if (resource.`type`() == ConfigResource.Type.TOPIC) newImage.topics().getTopic(resource.name()) else null
+        if (topic != null && _inklessMetadataView.isDisklessTopic(topic.name())) {
+          val configs = _inklessMetadataView.getTopicConfig(topic.name()).originals.asScala
+            .map { case (key, value) => key -> value.toString }.asJava
+          engine.onTopicConfigChanged(topic.name(), topic.id(), configs)
+        }
+      }
+    }
   }
 
   /**

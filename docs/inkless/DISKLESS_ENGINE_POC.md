@@ -15,214 +15,193 @@
  limitations under the License.
 -->
 
-# Evaluate a diskless engine boundary
+# Run Ursa through the diskless engine SPI
 
-A record-level engine boundary is feasible for append, fetch, and offset lookup.
-It can preserve Inkless's native implementation while letting a provider own its
-log format, offsets, and producer state. An object-storage interface cannot do
-that: it receives serialized objects after the native engine has chosen the WAL
-format and metadata model.
+The PoC connects Inkless's broker routing to the real Ursa storage implementation
+copied from UFK. Kafka clients can create a diskless topic, produce idempotently,
+consume, list offsets, grow partitions, and recover records after broker
+restarts. The external-engine path does not initialize the native Inkless
+control plane, object storage, or maintenance workers.
 
-This PoC extracts that data-plane boundary. It does **not** connect Ursa, replace
-the controller's control plane, or establish production compatibility. A custom
-engine must not be used with persistent application data on this branch.
+This remains an experimental integration, not a complete implementation of
+KIP-1163. Transactions, managed replicas, consolidation, classic-to-diskless
+migration, and DeleteRecords are not implemented for the external provider.
+The broker rejects the first four feature combinations or requests through its
+existing diskless checks and the external-engine configuration validation.
+DeleteRecords fails through the existing unavailable-interceptor path; it does
+not truncate Ursa data. The existing share-fetch path is not validated here.
 
-## Evidence and scope
-
-The inspected baselines are Inkless `e9de1e2e9b` and UFK `706699788b`.
-Inkless declares `4.3.0-inkless-SNAPSHOT`. This review does not establish whether
-Apache Kafka has merged any diskless implementation commits.
-
-As inspected on September 22, 2026:
-
-- [KIP-1150](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/345377898/KIP-1150+Diskless+Topics)
-  is accepted.
-- [KIP-1163](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/350783976/KIP-1163+Diskless+Core)
-  remains under discussion and exposes byte-oriented `ObjectStorage` operations.
-  Its design also includes local replica caches, tiered-storage integration, and
-  transactions. Those obligations exceed UFK's RF=1, nontransactional model.
-- [KIP-1164](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/350783984/KIP-1164+Diskless+Coordinator)
-  remains under discussion. The coordinator owns more than object locations:
-  it also owns ordering and producer/transaction metadata.
-
-The inference from the source inspection is narrower than "replace three
-handlers and the integration is complete." The handlers form a useful seam, but
-other broker and controller operations still reach the native control plane.
-
-## Implemented architecture
+## Architecture
 
 ```text
-ReplicaManager: existing classic/diskless routing and response aggregation
-  |
-  +-- DisklessEngine: append / fetch / createOffsetJob
-        |
-        +-- default: InklessDisklessEngine
-        |     +-- existing AppendHandler
-        |     +-- existing FetchHandler
-        |     +-- existing FetchOffsetHandler
-        |
-        +-- configured provider: no native data handlers constructed
+KafkaApis / ReplicaManager
+  +-- classic partitions: existing local-log path
+  +-- diskless partitions: DisklessEngine
+        +-- default: existing Inkless handlers
+        +-- isolated Ursa provider
+              +-- UFK reader/writer and producer-state implementation
+              +-- Lakestream catalog and Ursa object-storage runtime
+              +-- Oxia metadata and producer-state snapshots
 
-Controller, SharedState, deletion, retention, and storage initialization
-  +-- existing native ControlPlane and StorageBackend (not replaced)
+Active controller
+  +-- DisklessTopicLifecycleReconciler
+        +-- provider's DisklessTopicLifecycle
+              +-- ensure, grow, reconfigure, delete, and sweep
+
+Broker metadata updates
+  +-- fence deleted topic IDs and close cached partition handles
+  +-- apply changed topic configuration to existing handles
 ```
 
-The default adapter calls the existing handlers and closes them. It does not
-copy their algorithms. `ReplicaManager` retains its routing, ordered fetch
-inputs, mixed-request aggregation, and existing purgatory. The native
-consolidation path retains its specialized reader and offset handler.
+The broker keeps one dispatch layer. The integration does not copy UFK's
+`DisklessStorageReplicaManagerSupport` beside Inkless's routing. The default
+adapter reuses `AppendHandler`, `FetchHandler`, and `FetchOffsetHandler`.
 
-`FetchOffsetHandler.Job` implements a small `OffsetJob` interface. This preserves
-batching, cancellation, and delayed hybrid-read fallback without rewriting the
-router. It also routes the diskless `OffsetsForLeaderEpoch` lookup through the
-engine. A public upstream SPI should replace `TopicPartition` and the internal
-`FileRecordsOrError` result with topic-ID-aware request/result types. Kafka can
-then adapt those futures into its private purgatory job. The PoC deliberately
-does not present this job interface as the final public API.
+`DisklessEngine.Context` supplies Kafka-owned services and metadata lookups.
+The Ursa adapter translates append, fetch, and offset lookup and invokes the
+copied UFK implementation. Producer state uses UFK's stable `no-zone` namespace.
+The SPI does not yet carry a reliable client zone; a broker's rack must not
+change a producer's identity after failover.
 
-The SPI is temporarily in the existing Inkless module to avoid a build/module
-reorganization during the experiment. A production SPI needs a Kafka-owned API
-module and must not depend on the provider's implementation artifact.
+`OffsetJob` preserves batching and cancellation in the existing ListOffsets
+router. The isolated loader also establishes the provider context classloader
+when invoking returned offset jobs and lifecycle services.
 
-## Configure the experiment
+External engines have no native batch-coordinate cache. `DelayedFetch` hands
+waiting to the engine's asynchronous fetch implementation when that cache is
+absent. The native engine retains its original readiness probe. Kafka still
+combines classic and diskless results and applies its response handling.
 
-With no engine property, the native implementation remains the default.
-An experimental provider has a public no-argument constructor and implements
-`DisklessEngine`:
+## Build and configure
+
+Build the plugin separately from the broker runtime:
+
+```bash
+./gradlew :storage:ursa:assemblePlugin :storage:ursa:verifyPluginLicenses
+```
+
+The output is `storage/ursa/build/plugin/`. Keep this directory separate from
+Kafka's `libs/`. Configure every broker and controller with the same provider
+and storage settings:
 
 ```properties
 diskless.storage.system.enable=true
-diskless.engine.class.name=com.example.ExampleEngine
-diskless.engine.config.endpoint=example
+diskless.engine.class.name=org.apache.kafka.storage.diskless.UrsaDisklessEngine
+diskless.engine.class.path=/absolute/path/to/storage/ursa/build/plugin/*
+
+diskless.engine.config.ursa.catalog.oxia.service.url=oxia://localhost:6648/default
+diskless.engine.config.ursa.oxia.service.url=oxia://localhost:6648/default
+diskless.engine.config.ursa.storage.backend.type=S3
+diskless.engine.config.ursa.storage.path=ursa/wal
+diskless.engine.config.ursa.storage.s3.endpoint=http://localhost:9000
+diskless.engine.config.ursa.storage.s3.bucket=kafka-ursa
+diskless.engine.config.ursa.storage.s3.region=us-east-1
+diskless.engine.config.ursa.storage.s3.access.key=your-access-key
+diskless.engine.config.ursa.storage.s3.secret.key=your-secret-key
+diskless.engine.config.ursa.storage.s3.path.style.access=true
 ```
 
-The loader passes only `endpoint=example` to `configure`. It loads the class from
-the broker classpath, closes it if configuration fails, and does not fall back
-silently. These experimental properties are read from the original broker
-configuration; they are not yet registered as public Kafka configuration keys.
+Create the bucket before using it. Create Kafka topics with
+`diskless.enable=true`, replication factor 1, and `cleanup.policy=delete`.
+Unconfigured topics keep their classic behavior. Omitting the engine properties
+selects the native Inkless implementation.
 
-`diskless.engine.class.path` and `diskless.engine.request.timeout.ms` are **not
-implemented**. This branch still initializes native `SharedState`, storage, and
-the control plane. Keeping the three native data handlers uninitialized does
-not isolate a provider from that runtime dependency.
+The loader strips `diskless.engine.config.` before calling the provider.
+The properties are experimental and are read from the original broker
+configuration; they are not registered as stable Kafka public configuration.
+There is no separate engine request-timeout setting. Existing request
+deadlines and the copied UFK storage operations govern completion.
 
-Custom engines reject managed replicas at construction. This also excludes
-classic-to-diskless switching and consolidation, which depend on that setting.
-DeleteRecords, topic deletion, retention, and lifecycle notifications remain
-native and therefore do not act on custom-engine data. The test provider is a
-routing fixture, not an in-memory Kafka implementation or an Ursa adapter.
+The plugin is not added to Kafka's release tarball by this PoC. Its separate
+assembly includes a dependency license inventory, notices, and referenced
+license texts. `verifyPluginLicenses` compares that inventory with the actual
+assembled jars.
 
-## Complete the boundary before connecting Ursa
+## Runtime and lifecycle ownership
 
-| Area | Evidence in this checkout | Required ownership |
-| --- | --- | --- |
-| Append and fetch | `ReplicaManager.appendRecords`, `fetchDisklessMessages` | Engine owns validation, ordering, idempotence, persistence, and read visibility. Broker owns authentication, authorization, quotas, and request routing. |
-| Offset lookup | `DisklessFetchOffsetRouter`, `FetchOffsetHandler.Job` | Keep cancellation and hybrid fallback in the broker. Pass immutable topic IDs into the provider and define all special timestamp results. |
-| DeleteRecords | `ReplicaManager.deleteRecords`, `DeleteRecordsInterceptor` | Add engine truncation with per-partition errors and low watermarks; do not keep truncating the native metadata for externally stored data. |
-| Startup and shutdown | `SharedServer`, `BrokerServer`, `SharedState` | Select the provider before native storage/control-plane initialization. The native provider owns its background workers and resources. |
-| Retention and garbage collection | `RetentionEnforcer`, `FileCleaner`, `TopicPurger` | The provider owns physical cleanup and orphan rules for its format. Kafka supplies topic policy. |
-| Topic lifecycle | `ControllerApis` create/delete/create-partitions calls | Provide an idempotent asynchronous lifecycle SPI with recovery after controller changes. Metadata commit and storage readiness are different events. |
-| Replicas and consolidation | `ConsolidationFetcherManager`, `InitDisklessLogManager`, direct control-plane accesses in `ReplicaManager` | Either support the agreed replica model or negotiate an explicit restricted mode. These cannot keep accessing native batch coordinates for Ursa data. |
-| Metadata routing | `InklessTopicMetadataTransformer` | Kafka filters eligible brokers and listener endpoints. A provider may supply locality hints, subject to the same eligibility rules. |
+The provider follows the Ursa 1.0.0 BOM independently of Kafka's forced
+dependency versions. Kafka, logging, Scala, the engine SPI, and Yammer metrics
+remain shared APIs. Provider-private dependencies load only from the plugin
+runtime, with platform classes supplied by the JVM.
 
-### Lifecycle and fencing
+This strict boundary matters for optional dependencies: falling back to a
+broker-side OpenTelemetry implementation can mix incompatible class identities.
+The end-to-end test exercises the isolated runtime and checks that Oxia's API
+is absent from the broker test classpath.
 
-The proposed two `void` controller methods lose asynchronous failure and retry
-information. Post-commit callbacks alone also lose deletions that occur while a
-controller is down. A useful contract includes:
+Broker and controller instances share a classloader lease for the same runtime.
+The registry releases its reference when the last instance closes. Jar handles
+are reclaimed with the classloader instead of being closed eagerly: gRPC may
+still load classes during asynchronous shutdown after its client returns from
+`close()`.
 
-- `ensureTopic(..., metadataRevision)` returning a future, with idempotent
-  partition growth and config application.
-- `deleteTopic(topicId, name)` returning a future and durably fencing that topic
-  incarnation against late creates.
-- A recovery mechanism: an owned-topic inventory/orphan sweep, or durable replay
-  of lifecycle intents. Define how a newly active controller rejects stale work.
-- Broker-side deletion fencing before closing cached partition handles. Closing
-  a handle must not let an in-flight request recreate a deleted topic.
+The controller loads the provider without a broker context and obtains its
+lifecycle service. The provider owns that service and closes it at controller
+shutdown. Only the active controller reconciles committed metadata. The copied
+reconciler retains bounded concurrency, retries, metadata revisions, and orphan
+recovery; its sweep interval is ten minutes. Retriable backend failures are
+logged and metered, rather than treated as Kafka metadata replay faults.
 
-UFK already implements these concerns in `DisklessTopicLifecycle`,
-`DisklessTopicLifecycleReconciler`, and `DisklessStorageEngine.fenceDeletedTopic`.
-Reuse those implementations when connecting the controller, adapting their
-metadata/config integration. Copying them into this data-plane-only PoC would
-leave unused code and imply lifecycle behavior that is not wired up.
+Broker opens remain create-if-absent, so requests can race with controller
+reconciliation. Both use the same topic ID, partition count, and metadata
+revision. Deletion fences the immutable topic ID before retiring local handles;
+a same-name replacement gets a different storage identity.
 
-`onPartitionsAssigned` is not enough to open handles: diskless requests can be
-served by brokers other than the conventional partition leader. Providers need
-lazy opening from authoritative topic metadata, plus explicit stop/delete
-semantics. An assignment callback must not grant writes after a topic fence.
+## Source provenance and maintenance
 
-### Transactions, context, and asynchronous contracts
+The source baseline is UFK commit `706699788b`; the Inkless baseline is
+`e9de1e2e9b`. The implementation and license headers are copied, not rewritten.
 
-`supportsTransactions() == false` is a capability declaration, not transaction
-support. Kafka must reject incompatible requests/configuration consistently.
-A transaction-capable provider needs marker handling, producer fencing, last
-stable offsets, aborted-transaction metadata, and coordinator integration.
-Cross-classic/diskless transactions need an agreed protocol; an append boolean
-cannot supply it.
+- `storage/ursa/src/main/java/org/apache/kafka/storage/diskless/` contains UFK's
+  data/read path, producer state, and catalog lifecycle implementation.
+- `UrsaDisklessEngine` is the new broker adapter. `UrsaStorageConfig` uses
+  provider-local copies of UFK's configuration defaults instead of adding Ursa
+  keys to Kafka's server config class.
+- `UrsaStorageState` is final to satisfy this checkout's constructor-escape
+  compiler check. Its storage algorithms are unchanged.
+- The generic lifecycle contract, reconciler, and reconciler tests come from
+  UFK. Their imports and topic-enable key are adapted to Inkless.
+- The loader utilities come from UFK, with stricter private dependency isolation,
+  JVM platform delegation, returned-service context handling, and asynchronous
+  runtime-shutdown handling.
+- UFK's native storage API types remain private to the plugin. The broker API
+  stays in the existing Inkless module for this PoC; upstream work should put it
+  in a Kafka-owned API module.
 
-`MetadataRequest.RackId` is metadata-request context. It does not automatically
-appear on subsequent Produce requests, which may reach another broker or use
-another connection. Define where each operation gets its rack, allow unknown
-racks, and keep client-ID parsing as an explicit compatibility convention.
-UFK's `Writer.write(records, zone)` needs that decision before it can be adapted.
-`brokerId` belongs in engine initialization; request identity, listener, and
-deadline belong in per-request context. Do not add context fields that callers
-cannot populate reliably.
+Keep these copies identifiable when updating from UFK. Do not introduce a
+second broker routing layer or expose Lakestream/Oxia types through the engine
+SPI.
 
-The final asynchronous contract must specify buffer lifetime, synchronous
-exceptions, failed futures, per-partition failures, fetch byte budgets and
-ordering, timeout behavior, and late completion. Timing out an append does not
-undo its commit. Canceling a response must not free buffers still used by the
-provider. `RequestLocal` is thread-confined and cannot be retained for worker
-threads. None of these guarantees follows from `CompletableFuture` alone.
+## Verification
 
-### Reuse UFK without importing its broker bypass
-
-UFK's `Writer.write` and `Reader.fetch` already use compatible Kafka record and
-response types. Its `Reader.listOffsets` needs an adapter for this checkout's
-offset result and cancellation model. Reuse the Ursa storage implementation and
-its isolated loader; keep Inkless's broker routing as the single routing layer.
-Do not copy `DisklessStorageReplicaManagerSupport` beside it and maintain two
-independent dispatch paths.
-
-The isolated provider runtime must carry Lakestream/Oxia dependencies. Reuse
-UFK's loader/classloader code after settling the API module boundary; adding
-Ursa jars to the broker classpath would not validate that design. No Ursa code
-or dependencies are copied by this first experiment.
-
-## Discuss with the KIP authors
-
-Propose a record-level engine extension point **above** the object-store SPI.
-Keep `ObjectStorage` as a dependency of the default engine. The default engine
-retains its WAL builder and diskless coordinator client; an external engine
-owns its own format and metadata.
-
-First agree on whether external engines may own ordering and producer state,
-and which replica/transaction semantics every engine must implement. Then
-separate a small stable data API from the controller lifecycle API. The native
-design can remain the default implementation, but the public compatibility and
-ownership contract changes; it is not accurate to promise no KIP design change.
-
-Classic-to-diskless migration is outside the current KIP-1163 topic-config scope.
-Keep `initLog` out of the first public engine API until its retry, producer-state,
-and fencing semantics are designed. Rack-aware broker selection can likewise
-remain a broker policy unless a demonstrated provider requirement needs a hook.
-
-## Validation
-
-The targeted tests cover existing native handlers, mixed/hybrid broker routing,
-and the offset router. A new broker test loads a configured provider, routes
-append/fetch/ListOffsets to it, checks shutdown, and asserts that no native data
-handler is constructed. Loader tests cover config isolation and failed-startup
-cleanup. These prove routing and resource ownership at this seam, not durable
-storage, multi-broker recovery, or Ursa compatibility.
+`UrsaEngineIntegrationTest` runs real Kafka brokers with Oxia and MinIO. It
+checks mixed classic/diskless consumption, acknowledged object-storage writes,
+earliest/latest/timestamp offsets, rolling broker restarts, continued idempotent
+production, partition growth, catalog deletion, and same-name topic recreation.
+It uses no mocked storage.
 
 ```bash
-./gradlew :storage:inkless:test \
-  --tests 'io.aiven.inkless.engine.DisklessEnginesTest' \
-  --tests 'io.aiven.inkless.produce.AppendHandlerTest' \
-  --tests 'io.aiven.inkless.consume.FetchHandlerTest' \
-  --tests 'io.aiven.inkless.consume.FetchOffsetHandlerTest' \
-  :core:test --tests 'kafka.server.ReplicaManagerInklessTest' \
-  --tests 'kafka.server.DisklessFetchOffsetRouterTest'
+docker info
+./gradlew :core:test --tests kafka.server.UrsaEngineIntegrationTest
 ```
+
+The core test task assembles and checks the plugin before running. The existing
+native handler, ReplicaManager, offset-router, KafkaApis, configuration,
+metadata-publisher, and delayed-fetch tests cover the affected broker behavior.
+The copied lifecycle tests cover retry, ordering, leadership loss, and sweeps.
+This is targeted validation, not the full Kafka test suite or a performance
+benchmark.
+
+## Implications for the KIP proposal
+
+A record-level SPI can preserve the native implementation while allowing Ursa
+to own its format, ordering, and producer state. Keep `ObjectStorage` inside
+the default engine. The integration also needs the lifecycle and asynchronous
+fetch boundaries demonstrated here.
+
+[KIP-1163](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/350783976/KIP-1163+Diskless+Core)
+and [KIP-1164](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/350783984/KIP-1164+Diskless+Coordinator)
+still require a broader agreement on replicas, transactions, and compatibility.
+This PoC does not establish those semantics for external engines. The public
+SPI should also use topic-ID-aware offset requests/results instead of exposing
+Kafka's private purgatory job shape.

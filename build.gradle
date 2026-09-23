@@ -2585,6 +2585,73 @@ project(':storage') {
   }
 }
 
+project(':storage:ursa') {
+  base { archivesName = 'kafka-ursa-engine' }
+
+  configurations.configureEach {
+    // The provider follows Ursa's dependency contract, independently of broker-side forces.
+    resolutionStrategy.setForcedModules([])
+  }
+
+  dependencies {
+    compileOnly project(':clients')
+    compileOnly project(':server-common')
+    compileOnly project(':storage')
+    compileOnly project(':storage:storage-api')
+    compileOnly project(':storage:inkless')
+    compileOnly libs.metrics
+    compileOnly libs.slf4jApi
+    implementation enforcedPlatform('org.openlakestream:ursa-storage:1.0.0')
+    implementation 'org.openlakestream:lakestream-api:1.0.0'
+    implementation 'io.github.oxia-db:oxia-client-api'
+    implementation 'io.netty:netty-buffer'
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    runtimeOnly('org.openlakestream:ursa-storage-kafka-runtime:1.0.0') {
+      exclude group: 'org.apache.kafka', module: 'kafka-clients'
+      exclude group: 'org.apache.logging.log4j', module: 'log4j-slf4j2-impl'
+    }
+    runtimeOnly 'io.github.oxia-db:oxia-client'
+  }
+
+  // This provider is assembled separately. It is never added to core's runtimeClasspath.
+  tasks.register('assemblePlugin', Sync) {
+    dependsOn jar
+    into layout.buildDirectory.dir('plugin')
+    from jar
+    from(configurations.runtimeClasspath) {
+      exclude 'slf4j-api-*.jar', 'log4j-*.jar', 'metrics-core-2.*'
+    }
+    from('LICENSE-binary', 'NOTICE-binary')
+    from(rootProject.file('licenses')) {
+      include 'CDDL+GPL-1.1', 'eclipse-distribution-license-1.0', 'eclipse-public-license-2.0',
+        'protobuf-java-BSD-3-clause', 're2j-GO', 'zstd-jni-BSD-2-clause'
+      into 'licenses'
+    }
+  }
+
+  tasks.register('verifyPluginLicenses') {
+    dependsOn 'assemblePlugin'
+    doLast {
+      def jars = fileTree(layout.buildDirectory.dir('plugin')).matching { include '*.jar' }
+        .files.collect { it.name - '.jar' }.findAll { !it.startsWith('kafka-') }.toSet()
+      def declared = (file('LICENSE-binary').text =~ /(?m)^\s*-\s*([A-Za-z0-9_.+-]+-(?:[0-9]+\.[^\s,]+|[0-9]+))/)
+        .collect { it[1] }.toSet()
+      if (jars != declared) {
+        throw new GradleException("Ursa plugin license mismatch: missing=${jars - declared}, stale=${declared - jars}")
+      }
+    }
+  }
+
+  project(':core').tasks.named('test') {
+    dependsOn ':storage:ursa:verifyPluginLicenses'
+    systemProperty 'ursa.engine.class.path', "${project(':storage:ursa').layout.buildDirectory.get().asFile}/plugin/*"
+  }
+
+  checkstyle {
+    configProperties = checkstyleConfigProperties('import-control-ursa.xml')
+  }
+}
+
 project(':storage:inkless') {
 
   configurations {

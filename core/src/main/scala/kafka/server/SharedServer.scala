@@ -290,7 +290,8 @@ class SharedServer(
           Option(controllerServerMetrics).foreach(_.setIgnoredStaticVoters(ignoredStaticVoters))
         }
 
-        if (brokerConfig.disklessStorageSystemEnabled)
+        if (brokerConfig.disklessStorageSystemEnabled &&
+          !sharedServerConfig.originals.containsKey("diskless.engine.class.name"))
           inklessControlPlane = Some(ControlPlane.create(sharedServerConfig.inklessConfig, time))
 
         val _raftManager = new KafkaRaftManager[ApiMessageAndVersion](

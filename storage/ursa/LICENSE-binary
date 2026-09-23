@@ -1,0 +1,566 @@
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+-------------------------------------------------------------------------------
+This project bundles some components that are also licensed under the Apache
+License Version 2.0:
+
+- caffeine-3.2.0
+- jackson-annotations-2.21
+- jackson-core-2.21.5
+- jackson-databind-2.21.5
+- jackson-datatype-jdk8-2.21.5
+- jspecify-1.0.0
+- lz4-java-1.11.1
+- snappy-java-1.1.10.7
+
+-------------------------------------------------------------------------------
+Additional bundled dependencies present in ./.
+
+The list below is used by committer-tools/verify_license.py to verify that the
+LICENSE file included in the release tarball reflects the actual set of jars
+bundled under ./.
+
+- caffeine-3.2.0
+- commons-lang3-3.18.0
+- failureaccess-1.0.3
+- guava-33.4.8-jre
+- j2objc-annotations-3.0.0
+- jackson-annotations-2.21
+- jackson-core-2.21.5
+- jackson-databind-2.21.5
+- jackson-datatype-jdk8-2.21.5
+- javax.annotation-api-1.3.2
+- jspecify-1.0.0
+- listenablefuture-9999.0-empty-to-avoid-conflict-with-guava
+- lz4-java-1.11.1
+- snappy-java-1.1.10.7
+- zstd-jni-1.5.6-10
+-------------------------------------------------------------------------------
+Additional bundled dependencies present in ./.
+
+The list below is used by committer-tools/verify_license.py to verify that the
+LICENSE file included in the release tarball reflects the actual set of jars
+bundled under ./.
+
+- JavaFastPFOR-0.2.1
+- RoaringBitmap-1.6.9
+- accessors-smart-2.5.2
+- analyticsaccelerator-s3-1.3.1
+- animal-sniffer-annotations-1.24
+- annotations-2.32.28
+- annotations-26.0.1
+- annotations-4.1.1.4
+- apache-client-2.32.28
+- api-common-2.55.2
+- arns-2.32.28
+- audience-annotations-0.12.0
+- auth-2.32.28
+- auto-value-annotations-1.10.4
+- avro-1.12.0
+- aws-core-2.32.28
+- aws-json-protocol-2.32.28
+- aws-query-protocol-2.32.28
+- aws-xml-protocol-2.32.28
+- azure-core-1.57.1
+- azure-core-http-netty-1.16.0
+- azure-core-management-1.15.6
+- azure-identity-1.14.0
+- azure-json-1.5.1
+- azure-keyvault-core-1.0.0
+- azure-resourcemanager-2.47.0
+- azure-resourcemanager-appplatform-2.47.0
+- azure-resourcemanager-appservice-2.47.0
+- azure-resourcemanager-authorization-2.47.0
+- azure-resourcemanager-cdn-2.47.0
+- azure-resourcemanager-compute-2.47.0
+- azure-resourcemanager-containerinstance-2.47.0
+- azure-resourcemanager-containerregistry-2.47.0
+- azure-resourcemanager-containerservice-2.47.0
+- azure-resourcemanager-cosmos-2.47.0
+- azure-resourcemanager-dns-2.47.0
+- azure-resourcemanager-eventhubs-2.47.0
+- azure-resourcemanager-keyvault-2.47.0
+- azure-resourcemanager-monitor-2.47.0
+- azure-resourcemanager-msi-2.47.0
+- azure-resourcemanager-network-2.47.0
+- azure-resourcemanager-privatedns-2.47.0
+- azure-resourcemanager-redis-2.47.0
+- azure-resourcemanager-resources-2.47.0
+- azure-resourcemanager-search-2.47.0
+- azure-resourcemanager-servicebus-2.47.0
+- azure-resourcemanager-sql-2.47.0
+- azure-resourcemanager-storage-2.47.0
+- azure-resourcemanager-trafficmanager-2.47.0
+- azure-security-keyvault-keys-4.10.6
+- azure-security-keyvault-secrets-4.9.1
+- azure-storage-7.0.1
+- azure-storage-blob-12.31.2
+- azure-storage-common-12.30.2
+- azure-storage-file-share-12.25.1
+- azure-storage-internal-avro-12.16.2
+- azure-xml-1.2.1
+- checker-compat-qual-2.5.3
+- checksums-2.32.28
+- checksums-spi-2.32.28
+- commons-codec-1.17.1
+- commons-collections4-4.5.0
+- commons-compress-1.26.0
+- commons-configuration2-2.15.1
+- commons-io-2.22.0
+- commons-logging-1.3.6
+- commons-math3-3.6.1
+- commons-net-3.9.0
+- commons-pool-1.6
+- commons-text-1.14.0
+- conscrypt-openjdk-uber-2.5.2
+- content-type-2.3
+- crt-core-2.32.28
+- curator-client-5.2.0
+- curator-framework-5.2.0
+- detector-resources-support-0.33.0
+- disruptor-3.4.2
+- endpoints-spi-2.32.28
+- error_prone_annotations-2.36.0
+- eventstream-1.0.1
+- exporter-metrics-0.33.0
+- failsafe-2.4.4
+- failsafe-3.3.2
+- fastutil-8.5.16
+- flogger-0.7.1
+- flogger-system-backend-0.7.1
+- gapic-google-cloud-storage-v2-2.61.0
+- gax-2.72.2
+- gax-grpc-2.72.2
+- gax-httpjson-2.72.2
+- gcs-connector-hadoop3-2.2.31
+- gcsio-2.2.31
+- google-api-client-2.7.2
+- google-api-client-jackson2-2.7.0
+- google-api-services-iamcredentials-v1-rev20211203-2.0.0
+- google-api-services-storage-v1-rev20251118-2.0.0
+- google-auth-library-credentials-1.24.1
+- google-auth-library-oauth2-http-1.24.1
+- google-cloud-core-2.62.2
+- google-cloud-core-grpc-2.62.2
+- google-cloud-core-http-2.62.2
+- google-cloud-monitoring-3.52.0
+- google-cloud-storage-2.61.0
+- google-cloud-storage-control-2.44.1
+- google-extensions-0.7.1
+- google-http-client-1.44.2
+- google-http-client-apache-v2-2.0.2
+- google-http-client-appengine-2.0.2
+- google-http-client-gson-1.44.2
+- google-http-client-jackson2-2.0.2
+- google-oauth-client-1.33.3
+- grpc-api-1.76.2
+- grpc-context-1.76.2
+- grpc-core-1.76.2
+- grpc-google-cloud-storage-control-v2-2.44.1
+- grpc-google-cloud-storage-v2-2.61.0
+- grpc-googleapis-1.76.2
+- grpc-grpclb-1.76.2
+- grpc-inprocess-1.76.2
+- grpc-netty-shaded-1.76.2
+- grpc-protobuf-1.76.2
+- grpc-protobuf-lite-1.76.2
+- grpc-services-1.76.2
+- grpc-stub-1.76.2
+- grpc-util-1.76.2
+- gson-2.11.0
+- hadoop-annotations-3.5.0
+- hadoop-auth-3.5.0
+- hadoop-aws-3.5.0
+- hadoop-azure-3.5.0
+- hadoop-common-3.5.0
+- hadoop-hdfs-client-3.5.0
+- hadoop-mapreduce-client-core-3.5.0
+- hadoop-shaded-guava-1.5.0
+- hadoop-shaded-protobuf_3_25-1.5.0
+- hadoop-yarn-api-3.5.0
+- hadoop-yarn-client-3.5.0
+- hadoop-yarn-common-3.5.0
+- hessian-lite-4.0.4
+- http-auth-2.32.28
+- http-auth-aws-2.32.28
+- http-auth-aws-eventstream-2.32.28
+- http-auth-spi-2.32.28
+- http-client-spi-2.32.28
+- httpclient-4.5.14
+- httpcore-4.4.16
+- identity-spi-2.32.28
+- istack-commons-runtime-3.0.12
+- jackson-dataformat-xml-2.21.5
+- jackson-datatype-jsr310-2.21.5
+- jackson-module-parameter-names-2.21.5
+- jakarta.activation-1.2.2
+- jakarta.activation-api-1.2.2
+- jakarta.annotation-api-1.3.5
+- jakarta.servlet-api-4.0.4
+- jakarta.servlet.jsp-api-2.3.6
+- jakarta.ws.rs-api-2.1.6
+- jakarta.xml.bind-api-2.3.3
+- jaxb-runtime-2.3.9
+- jcip-annotations-1.0-1
+- jettison-1.5.4
+- jetty-webapp-9.4.58.v20250814
+- jetty-xml-12.0.37
+- jna-5.13.0
+- jna-platform-5.13.0
+- json-smart-2.5.2
+- json-utils-2.32.28
+- jsr305-3.0.2
+- jts-core-1.20.0
+- kerb-core-2.0.3
+- kerb-crypto-2.0.3
+- kerb-util-2.0.3
+- kerby-asn1-2.0.3
+- kerby-config-2.0.3
+- kerby-pkix-2.0.3
+- kerby-util-2.0.3
+- lakestream-api-1.0.0
+- lambda-2.32.28
+- lang-tag-1.7
+- metrics-spi-2.32.28
+- metrics-core-3.2.4
+- msal4j-1.17.2
+- msal4j-persistence-extension-1.3.0
+- netty-buffer-4.1.136.Final
+- netty-codec-4.1.136.Final
+- netty-codec-dns-4.1.136.Final
+- netty-codec-http-4.1.136.Final
+- netty-codec-http2-4.1.136.Final
+- netty-codec-socks-4.1.136.Final
+- netty-common-4.1.136.Final
+- netty-handler-4.1.136.Final
+- netty-handler-proxy-4.1.136.Final
+- netty-nio-client-2.32.28
+- netty-resolver-4.1.136.Final
+- netty-resolver-dns-4.1.136.Final
+- netty-resolver-dns-classes-macos-4.1.136.Final
+- netty-resolver-dns-native-macos-4.1.136.Final-osx-aarch_64
+- netty-resolver-dns-native-macos-4.1.136.Final-osx-x86_64
+- netty-tcnative-boringssl-static-2.0.78.Final
+- netty-tcnative-classes-2.0.78.Final
+- netty-transport-4.1.136.Final
+- netty-transport-classes-epoll-4.1.136.Final
+- netty-transport-classes-kqueue-4.1.136.Final
+- netty-transport-native-epoll-4.1.136.Final-linux-aarch_64
+- netty-transport-native-epoll-4.1.136.Final-linux-riscv64
+- netty-transport-native-epoll-4.1.136.Final-linux-x86_64
+- netty-transport-native-kqueue-4.1.136.Final-osx-aarch_64
+- netty-transport-native-kqueue-4.1.136.Final-osx-x86_64
+- netty-transport-native-unix-common-4.1.136.Final
+- nimbus-jose-jwt-9.37.4
+- oauth2-oidc-sdk-11.18
+- opencensus-api-0.31.1
+- opencensus-contrib-exemplar-util-0.31.0
+- opencensus-contrib-grpc-metrics-0.31.0
+- opencensus-contrib-http-util-0.31.1
+- opencensus-contrib-resource-util-0.31.0
+- opencensus-exporter-metrics-util-0.31.0
+- opencensus-exporter-stats-stackdriver-0.31.0
+- opencensus-impl-0.31.0
+- opencensus-impl-core-0.31.0
+- opentelemetry-api-1.62.0
+- opentelemetry-common-1.62.0
+- opentelemetry-context-1.62.0
+- opentelemetry-sdk-1.62.0
+- opentelemetry-sdk-common-1.62.0
+- opentelemetry-sdk-extension-autoconfigure-1.62.0
+- opentelemetry-sdk-extension-autoconfigure-spi-1.62.0
+- opentelemetry-sdk-logs-1.62.0
+- opentelemetry-sdk-metrics-1.62.0
+- opentelemetry-sdk-trace-1.62.0
+- oxia-client-0.9.4
+- oxia-client-api-0.9.4
+- parquet-avro-1.16.0
+- parquet-column-1.16.0
+- parquet-common-1.16.0
+- parquet-encoding-1.16.0
+- parquet-format-structures-1.16.0
+- parquet-hadoop-1.16.0
+- parquet-jackson-1.16.0
+- parquet-variant-1.16.0
+- perfmark-api-0.27.0
+- profiles-2.32.28
+- proto-google-cloud-monitoring-v3-3.52.0
+- proto-google-cloud-storage-control-v2-2.44.1
+- proto-google-cloud-storage-v2-2.61.0
+- proto-google-common-protos-2.59.2
+- proto-google-iam-v1-1.58.2
+- protobuf-java-3.25.8
+- protobuf-java-util-3.25.8
+- protocol-core-2.32.28
+- re2j-1.7
+- reactive-streams-1.0.4
+- reactor-core-3.7.14
+- reactor-netty-core-1.2.8
+- reactor-netty-http-1.2.8
+- regions-2.32.28
+- retries-2.32.28
+- retries-spi-2.32.28
+- s3-2.32.28
+- s3-transfer-manager-2.32.28
+- sdk-core-2.32.28
+- shared-resourcemapping-0.33.0
+- slog-0.9.5
+- stax2-api-4.2.2
+- sts-2.32.28
+- third-party-jackson-core-2.32.28
+- threetenbp-1.7.0
+- txw2-2.3.9
+- ursa-storage-common-1.0.0
+- ursa-storage-core-1.0.0
+- ursa-storage-kafka-runtime-1.0.0
+- ursa-storage-lakehouse-kafka-reader-1.0.0
+- ursa-storage-lakestream-1.0.0
+- util-2.2.31
+- util-hadoop-hadoop3-2.2.31
+- utils-2.32.28
+- wildfly-openssl-2.2.5.Final
+- woodstox-core-7.0.0
+- zero-allocation-hashing-0.16
+- zookeeper-3.8.6
+- zookeeper-jute-3.8.6
+===============================================================================
+This product bundles various third-party components under other open source
+licenses. This section summarizes those components and their licenses.
+See licenses/ for text of these licenses.
+
+---------------------------------------
+Eclipse Distribution License - v 1.0
+see: licenses/eclipse-distribution-license-1.0
+
+
+---------------------------------------
+Eclipse Public License - v 2.0
+see: licenses/eclipse-public-license-2.0
+
+
+---------------------------------------
+CDDL 1.1 + GPLv2 with classpath exception
+see: licenses/CDDL+GPL-1.1
+
+- javax.annotation-api-1.3.2
+
+---------------------------------------
+MIT License
+
+
+---------------------------------------
+BSD 2-Clause
+
+- zstd-jni-1.5.6-10, see: licenses/zstd-jni-BSD-2-clause
+
+---------------------------------------
+BSD 3-Clause
+
+- protobuf-java-3.25.8, see: licenses/protobuf-java-BSD-3-clause
+- protobuf-java-util-3.25.8, see: licenses/protobuf-java-BSD-3-clause
+
+---------------------------------------
+Go License
+
+- re2j-1.7, see: licenses/re2j-GO

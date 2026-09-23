@@ -90,6 +90,7 @@ include 'clients',
     'storage',
     'storage:api',
     'storage:inkless',
+    'storage:ursa',
     'streams',
     'streams:examples',
     'streams:integration-tests',
@@ -129,4 +130,3 @@ include 'clients',
 
 project(":storage:api").name = "storage-api"
 rootProject.name = 'kafka'
-

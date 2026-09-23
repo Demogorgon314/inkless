@@ -27,6 +27,7 @@ import org.apache.kafka.server.storage.log.FetchPartitionData;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.URL;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -34,10 +35,8 @@ import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.produce.AppendHandler;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -45,6 +44,16 @@ import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
 
 public class DisklessEnginesTest {
+    @Test
+    public void sharesPlatformAndSpiButDoesNotLeakMissingPrivateClassesFromBroker() throws Exception {
+        try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader())) {
+            assertSame(DisklessEngine.class, loader.loadClass(DisklessEngine.class.getName()));
+            assertSame(ClassLoader.getPlatformClassLoader().loadClass("org.w3c.dom.Node"),
+                loader.loadClass("org.w3c.dom.Node"));
+            assertThrows(ClassNotFoundException.class, () -> loader.loadClass(Test.class.getName()));
+        }
+    }
+
     @Test
     public void closesEveryNativeHandlerWhenOneFails() throws IOException {
         var append = mock(AppendHandler.class);
@@ -71,12 +80,12 @@ public class DisklessEnginesTest {
             DisklessEngines.CLASS_NAME_CONFIG, TestEngine.class.getName(),
             DisklessEngines.CONFIG_PREFIX + "endpoint", "test-endpoint",
             "unrelated.broker.setting", "private");
-        TestEngine engine;
-        try (var loaded = DisklessEngines.load(config, () -> fail("Native engine must stay uninitialized"))) {
-            engine = (TestEngine) loaded;
-            assertEquals(Map.of("endpoint", "test-endpoint"), engine.config);
+        try (var construction = mockConstruction(TestEngine.class)) {
+            try (var loaded = DisklessEngines.load(config, () -> fail("Native engine must stay uninitialized"))) {
+                verify(construction.constructed().get(0)).configure(Map.of("endpoint", "test-endpoint"));
+            }
+            verify(construction.constructed().get(0)).close();
         }
-        assertTrue(engine.closed);
     }
 
     @Test

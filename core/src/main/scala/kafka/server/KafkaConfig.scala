@@ -548,6 +548,11 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
   validateValues()
 
   private def validateValues(): Unit = {
+    if (originals.containsKey("diskless.engine.class.name")) {
+      require(disklessStorageSystemEnabled, "diskless.engine.class.name requires diskless.storage.system.enable=true")
+      require(!disklessManagedReplicasEnabled,
+        "External diskless engines do not support managed replicas, switching, or consolidation")
+    }
     if (nodeId != brokerId) {
       throw new ConfigException(s"You must set `${KRaftConfigs.NODE_ID_CONFIG}` to the same value as `${ServerConfigs.BROKER_ID_CONFIG}`.")
     }

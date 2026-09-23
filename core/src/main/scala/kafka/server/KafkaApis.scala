@@ -127,7 +127,15 @@ class KafkaApis(val requestChannel: RequestChannel,
     metadataCache, authHelper, config)
   val shareGroupConfigProvider = new ShareGroupConfigProvider(groupConfigManager)
 
-  val inklessTopicMetadataTransformer = inklessSharedState.map(s => new InklessTopicMetadataTransformer(s.metadata(), s.config().clientAzListenerMap()))
+  private val disklessMetadata = inklessSharedState.map(_.metadata()).orElse {
+    if (config.disklessStorageSystemEnabled && config.originals.containsKey("diskless.engine.class.name"))
+      Some(replicaManager.inklessMetadataView())
+    else None
+  }
+  val inklessTopicMetadataTransformer = inklessSharedState
+    .map(s => new InklessTopicMetadataTransformer(s.metadata(), s.config().clientAzListenerMap()))
+    .orElse(disklessMetadata.map(metadata =>
+      new InklessTopicMetadataTransformer(metadata, config.inklessConfig.clientAzListenerMap())))
 
   def close(): Unit = {
     aclApis.close()
@@ -386,7 +394,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   private def getCurrentLeader(tp: TopicPartition, ln: ListenerName): LeaderNode = {
     // Return unknown leader if the topic is diskless, as these topics do not have leaders
-    if (inklessSharedState.exists(_.metadata().isDisklessTopic(tp.topic()))) {
+    if (disklessMetadata.exists(_.isDisklessTopic(tp.topic()))) {
       return LeaderNode(-1, -1, OptionConverters.toScala(metadataCache.getAliveBrokerNode(-1, ln)))
     }
 
@@ -690,7 +698,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             // If the topic name was not known, we will have no bytes out.
             if (topicResponse.topic != null) {
               val tp = new TopicIdPartition(topicResponse.topicId, new TopicPartition(topicResponse.topic, data.partitionIndex))
-              val isDiskless = inklessSharedState.exists(_.metadata().isDisklessTopic(tp.topic))
+              val isDiskless = disklessMetadata.exists(_.isDisklessTopic(tp.topic))
               brokerTopicStats.updateBytesOut(tp.topic, fetchRequest.isFromFollower, reassigningPartitions.contains(tp), FetchResponse.recordsSize(data), isDiskless)
             }
           }
@@ -1819,7 +1827,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       val currentErrors = new ConcurrentHashMap[TopicPartition, Errors]()
       marker.partitions.forEach { partition =>
-        if (inklessSharedState.exists(s => s.metadata().isDisklessTopic(partition.topic()))) {
+        if (disklessMetadata.exists(_.isDisklessTopic(partition.topic()))) {
           warn("Attempt to call WriteTxnMarkersRequest with diskless topic")
           currentErrors.put(partition, Errors.INVALID_TOPIC_EXCEPTION)
         } else {
@@ -1987,7 +1995,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             unauthorizedTopicErrors += topicPartition -> Errors.TOPIC_AUTHORIZATION_FAILED
           else if (!metadataCache.contains(topicPartition))
             nonExistingTopicErrors += topicPartition -> Errors.UNKNOWN_TOPIC_OR_PARTITION
-          else if (inklessSharedState.exists(s => s.metadata().isDisklessTopic(topicPartition.topic))) {
+          else if (disklessMetadata.exists(_.isDisklessTopic(topicPartition.topic))) {
             warn("Attempt to call AddPartitionsToTxnRequest with diskless topic")
             prohibitedInklessTopicErrors += topicPartition -> Errors.INVALID_TOPIC_EXCEPTION
           } else
@@ -4257,7 +4265,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           // If the topic name was not known, we will have no bytes out.
           if (topicResponse.topicId != null) {
             val tp = new TopicIdPartition(topicResponse.topicId, new TopicPartition(topicIdNames.get(topicResponse.topicId), data.partitionIndex))
-            val isDiskless = inklessSharedState.exists(_.metadata().isDisklessTopic(tp.topic))
+            val isDiskless = disklessMetadata.exists(_.isDisklessTopic(tp.topic))
             brokerTopicStats.updateBytesOut(tp.topic, false, false, ShareFetchResponse.recordsSize(data), isDiskless)
           }
         }

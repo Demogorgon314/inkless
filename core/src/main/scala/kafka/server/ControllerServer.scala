@@ -21,6 +21,8 @@ import kafka.network.SocketServer
 import kafka.raft.KafkaRaftManager
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.metadata.{ClientQuotaMetadataManager, DynamicConfigPublisher, KRaftMetadataCachePublisher}
+import kafka.server.metadata.DisklessTopicLifecycleReconciler
+import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines}
 
 import scala.collection.immutable
 import kafka.utils.Logging
@@ -104,6 +106,7 @@ class ControllerServer(
   var controllerApisHandlerPool: KafkaRequestHandlerPool = _
   def kafkaYammerMetrics: KafkaYammerMetrics = KafkaYammerMetrics.INSTANCE
   val metadataPublishers: util.List[MetadataPublisher] = new util.ArrayList[MetadataPublisher]()
+  private var disklessLifecycleEngine: Option[DisklessEngine] = None
   @volatile var metadataCache : KRaftMetadataCache = _
   @volatile var metadataCachePublisher: KRaftMetadataCachePublisher = _
   @volatile var featuresPublisher: FeaturesPublisher = _
@@ -340,6 +343,16 @@ class ControllerServer(
         ),
         "controller"))
 
+      if (config.disklessStorageSystemEnabled && config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
+        val engine = DisklessEngines.load(config.originals, () =>
+          throw new IllegalStateException("Missing diskless engine class"))
+        disklessLifecycleEngine = Some(engine)
+        metadataPublishers.add(new DisklessTopicLifecycleReconciler(config.nodeId, engine.topicLifecycle(),
+          // Backend failures are retried by the reconciler; they are not metadata replay failures.
+          (message: String, cause: Throwable) => warn(message, cause),
+          600000L))
+      }
+
       // Register this instance for dynamic config changes to the KafkaConfig. This must be called
       // after the authorizer and quotaManagers are initialized, since it references those objects.
       // It must be called before DynamicClientQuotaPublisher is installed, since otherwise we may
@@ -464,6 +477,8 @@ class ControllerServer(
       }
       metadataPublishers.forEach(p => sharedServer.loader.removeAndClosePublisher(p).get())
       metadataPublishers.clear()
+      disklessLifecycleEngine.foreach(engine => Utils.closeQuietly(engine, "diskless lifecycle engine"))
+      disklessLifecycleEngine = None
       if (metadataCache != null) {
         metadataCache = null
       }

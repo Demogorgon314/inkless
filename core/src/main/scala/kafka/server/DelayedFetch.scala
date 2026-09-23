@@ -203,6 +203,9 @@ class DelayedFetch(
         return None  // Case C
     }
 
+    // External engines own asynchronous fetch waiting and have no native batch-coordinate cache.
+    if (response.isEmpty) return None
+
     response.get.asScala.foreach { r =>
       r.errors() match {
         case Errors.NONE =>
@@ -386,4 +389,3 @@ object DelayedFetchMetrics {
   val followerExpiredRequestMeter: Meter = metricsGroup.newMeter("ExpiresPerSec", "requests", TimeUnit.SECONDS, Map(FetcherTypeKey -> "follower").asJava)
   val consumerExpiredRequestMeter: Meter = metricsGroup.newMeter("ExpiresPerSec", "requests", TimeUnit.SECONDS, Map(FetcherTypeKey -> "consumer").asJava)
 }
-

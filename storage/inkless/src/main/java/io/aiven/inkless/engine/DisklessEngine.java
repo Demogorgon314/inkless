@@ -19,19 +19,25 @@ package io.aiven.inkless.engine;
 import org.apache.kafka.common.Configurable;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
 import org.apache.kafka.storage.internals.log.OffsetResultHolder.FileRecordsOrError;
+import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.Closeable;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
 
 /**
  * Experimental broker data-plane boundary. The engine owns record validation, offsets,
@@ -39,6 +45,28 @@ import java.util.concurrent.Future;
  * This interface is not a complete storage-provider or stable public API.
  */
 public interface DisklessEngine extends Configurable, Closeable {
+    record Context(Time time, int brokerId, BrokerTopicStats metrics,
+                   Map<String, Object> logDefaults, Function<String, Uuid> topicId,
+                   Function<String, Map<String, String>> topicConfig,
+                   Function<String, OptionalInt> partitionCount, LongSupplier metadataRevision) {
+    }
+
+    /** Initializes broker services after configure and before the first data request. */
+    default void initialize(Context context) {
+    }
+
+    /** Creates the controller service; the engine owns and closes it. No broker context is required. */
+    default DisklessTopicLifecycle topicLifecycle() {
+        throw new UnsupportedOperationException("This engine has no controller lifecycle");
+    }
+
+    /** Fences deleted topic incarnations before the broker retires their partition handles. */
+    default void onTopicDeleted(String name, Uuid topicId) {
+    }
+
+    default void onTopicConfigChanged(String name, Uuid topicId, Map<String, String> config) {
+    }
+
     /**
      * Completes after the engine commits the records. Uses RequestLocal only on the calling
      * thread; asynchronous work must own any buffers it retains beyond the call.

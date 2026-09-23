@@ -8827,7 +8827,10 @@ class ReplicaManagerInklessTest {
     engineClassName: Option[String] = None
   ): ReplicaManager = {
     val props = TestUtils.createBrokerConfig(1, logDirCount = 2)
-    engineClassName.foreach(name => props.put(DisklessEngines.CLASS_NAME_CONFIG, name))
+    engineClassName.foreach { name =>
+      props.put(DisklessEngines.CLASS_NAME_CONFIG, name)
+      props.put(ServerConfigs.DISKLESS_STORAGE_SYSTEM_ENABLE_CONFIG, "true")
+    }
     if (disklessManagedReplicasEnabled || disklessRemoteStorageConsolidationEnabled) {
       props.put(ServerConfigs.DISKLESS_STORAGE_SYSTEM_ENABLE_CONFIG, "true")
     }

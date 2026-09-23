@@ -191,6 +191,7 @@ class BrokerMetadataPublisher(
 
       // Apply configuration deltas.
       dynamicConfigPublisher.onMetadataUpdate(delta, newImage)
+      if (delta.configsDelta() != null) replicaManager.updateDisklessTopicConfigs(delta.configsDelta(), newImage)
 
       // Apply client quotas delta.
       dynamicClientQuotaPublisher.onMetadataUpdate(delta, newImage, manifest)
