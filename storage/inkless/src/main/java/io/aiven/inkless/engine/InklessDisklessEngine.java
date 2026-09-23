@@ -36,11 +36,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
 import io.aiven.inkless.common.SharedState;
-import io.aiven.inkless.consolidation.InklessConsolidation;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.FindBatchRequest;
@@ -59,7 +60,7 @@ public final class InklessDisklessEngine implements DisklessEngine {
 
     private SharedState sharedState;
     private InklessConsolidationSupport consolidationSupport;
-    private LogTransitionSupport logTransitionSupport;
+    private LogTransition logTransitionSupport;
     private DeleteRecordsInterceptor deleteRecords;
     private RetentionEnforcer retention;
     private FileCleaner cleaner;
@@ -117,11 +118,7 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     @Override
-    public Optional<RecordDeleter> recordDeleter() {
-        return Optional.of(this::deleteRecords);
-    }
-
-    private CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
+    public CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
         Map<TopicPartition, Long> offsets) {
         var result = new CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>>();
         try {
@@ -134,22 +131,55 @@ public final class InklessDisklessEngine implements DisklessEngine {
         return result;
     }
 
-    /** Returns internal coordination owned by this engine, for native broker assembly only. */
-    public Optional<InklessConsolidation> consolidation() {
-        return Optional.ofNullable(consolidationSupport);
+    @Override
+    public Set<Capability> capabilities() {
+        return Set.of(Capability.DELETE_RECORDS, Capability.FETCH_PROBE,
+            Capability.LOG_TRANSITION, Capability.KAFKA_LOG_TIERING);
     }
 
     @Override
-    public Optional<LogTransitionSupport> logTransition() {
-        return Optional.ofNullable(logTransitionSupport);
+    public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetchForReplication(
+        FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions) {
+        return consolidationSupport.fetch(params, partitions);
     }
 
     @Override
-    public Optional<FetchProber> fetchProber() {
-        return Optional.of(this::probeFetch);
+    public OptionalLong remoteLogStartOffset(TopicIdPartition partition) {
+        return consolidationSupport.remoteLogStartOffset(partition);
     }
 
-    private List<FetchAvailability> probeFetch(List<FetchProbe> requests) {
+    @Override
+    public OptionalLong earliestOffset(TopicIdPartition partition) {
+        return consolidationSupport.earliestOffset(partition);
+    }
+
+    @Override
+    public Map<TopicIdPartition, OffsetResult> advanceEarliestOffsets(Map<TopicIdPartition, Long> offsets) {
+        return consolidationSupport.advanceEarliestOffsets(offsets);
+    }
+
+    @Override
+    public void reportRemoteLogStartOffset(TopicPartition partition, long offset) {
+        consolidationSupport.reportRemoteLogStartOffset(partition, offset);
+    }
+
+    @Override
+    public Map<TopicIdPartition, OffsetResult> reclaimReplicatedRecords(Map<TopicIdPartition, Long> offsets) {
+        return consolidationSupport.reclaimReplicatedRecords(offsets);
+    }
+
+    @Override
+    public List<Errors> initializeLogs(List<LogInitialization> requests) {
+        return logTransitionSupport.initializeLogs(requests);
+    }
+
+    @Override
+    public Errors repairLog(TopicIdPartition partition, long startOffset) {
+        return logTransitionSupport.repairLog(partition, startOffset);
+    }
+
+    @Override
+    public List<FetchAvailability> probeFetch(List<FetchProbe> requests) {
         List<FindBatchResponse> responses;
         if (!sharedState.isBatchCoordinateCacheEnabled()) {
             responses = sharedState.controlPlane().findBatches(requests.stream()

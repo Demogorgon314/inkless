@@ -16,20 +16,14 @@
  */
 package io.aiven.inkless.engine;
 
-import org.apache.kafka.common.TopicIdPartition;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
-import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult;
-import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.util.Scheduler;
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.Closeable;
-import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -48,11 +42,10 @@ import java.util.function.Supplier;
  * <p>Kafka stops request handlers and the broker scheduler before close. The engine must settle
  * its own background work before releasing resources. Close is idempotent; it is not a per-request
  * cancellation API.
- * Borrowed capabilities share the engine lifetime; callers do not close them independently
- * and must not use them after engine close.
+ * All operations share the engine lifetime. No operation returns an independently owned service.
  * Callbacks may run on completion threads, so neither side may assume a request-handler thread.
  */
-public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeable {
+public interface DisklessEngine extends Appender, Fetcher, OffsetReader, LogRetention, LogTransition, Closeable {
     /** Kafka-owned services; metadata.get() captures one image for a request or maintenance pass. */
     record Context(Time time, int brokerId, BrokerTopicStats metrics,
                    Map<String, Object> logDefaults, Supplier<DisklessMetadataSnapshot> metadata) {
@@ -70,40 +63,24 @@ public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeab
     default void start(Scheduler scheduler, long initialDelayMs) {
     }
 
-    /** Optional deletion support. Capability availability stays fixed for this engine's lifetime. */
-    default Optional<RecordDeleter> recordDeleter() {
-        return Optional.empty();
+    /** Optional operations. Core append, fetch, and offset lookup are always required. */
+    enum Capability {
+        /** Logical deletion through deleteRecords. */
+        DELETE_RECORDS,
+        /** Non-authoritative readiness hints through probeFetch. */
+        FETCH_PROBE,
+        /** Idempotent classic-log initialization and reconciliation. */
+        LOG_TRANSITION,
+        /** Background log copying, cross-tier start offsets, and safe copy reclamation. */
+        KAFKA_LOG_TIERING
     }
 
-    @FunctionalInterface
-    interface RecordDeleter {
-        /** Returns one result per partition, including partitions deleted during the request. */
-        CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
-            Map<TopicPartition, Long> offsets);
-    }
-
-    record FetchProbe(TopicIdPartition partition, long offset, int maxBytes) { }
-
-    /** hasData distinguishes a known batch range from a local cache miss. */
-    record FetchAvailability(TopicIdPartition partition, Errors error, boolean hasData,
-                             long highWatermark, long estimatedBytes) { }
-
-    /** Optional readiness service, owned and closed by the engine. */
-    default Optional<FetchProber> fetchProber() {
-        return Optional.empty();
-    }
-
-    @FunctionalInterface
-    interface FetchProber {
-        /**
-         * Returns ordered, unbudgeted readiness hints. A zero-byte result can be stale and must
-         * never replace an authoritative fetch response.
-         */
-        List<FetchAvailability> probeFetch(List<FetchProbe> requests);
-    }
-
-    /** Optional takeover of classic logs; independent of consolidation support. */
-    default Optional<LogTransitionSupport> logTransition() {
-        return Optional.empty();
+    /**
+     * Returns a non-null, immutable set fixed for this engine's lifetime.
+     * Kafka checks capabilities before invoking optional operations or starting their workflows.
+     * Implementations must honor every operation covered by an advertised capability.
+     */
+    default Set<Capability> capabilities() {
+        return Set.of();
     }
 }

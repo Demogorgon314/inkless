@@ -17,10 +17,12 @@
 package io.aiven.inkless.engine;
 
 import org.apache.kafka.common.TopicIdPartition;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -34,4 +36,23 @@ public interface Fetcher {
     CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);
 
+    /**
+     * Reads records for copying into Kafka's log tiers using the same result and ownership contract.
+     * Implementations may isolate background work from client fetches. Requires KAFKA_LOG_TIERING.
+     */
+    default CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetchForReplication(
+        FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions) {
+        return fetch(params, partitions);
+    }
+
+    record FetchProbe(TopicIdPartition partition, long offset, int maxBytes) { }
+
+    /** hasData distinguishes a known batch range from a local cache miss. */
+    record FetchAvailability(TopicIdPartition partition, Errors error, boolean hasData,
+                             long highWatermark, long estimatedBytes) { }
+
+    /** Requires FETCH_PROBE. Returns ordered hints; a cache miss cannot replace authoritative fetch. */
+    default List<FetchAvailability> probeFetch(List<FetchProbe> requests) {
+        throw new UnsupportedOperationException("Fetch probing is not supported");
+    }
 }

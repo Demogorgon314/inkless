@@ -18,7 +18,7 @@
 package kafka.server
 
 import com.yammer.metrics.core.Meter
-import io.aiven.inkless.engine.DisklessEngine.FetchProbe
+import io.aiven.inkless.engine.Fetcher.FetchProbe
 import kafka.utils.Logging
 
 import java.util.concurrent.{CompletableFuture, TimeUnit}

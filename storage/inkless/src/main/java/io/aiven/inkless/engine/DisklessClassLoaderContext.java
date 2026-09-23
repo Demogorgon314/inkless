@@ -20,18 +20,10 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DisklessClassLoaderContext {
-
-    // Only these engine-owned services cross the boundary. Values and futures are never proxied.
-    private static final Map<String, Class<?>> CAPABILITY_TYPES = Map.of(
-        "logTransition", LogTransitionSupport.class,
-        "recordDeleter", DisklessEngine.RecordDeleter.class,
-        "fetchProber", DisklessEngine.FetchProber.class);
 
     private DisklessClassLoaderContext() {
     }
@@ -129,15 +121,7 @@ final class DisklessClassLoaderContext {
                     lease.close();
                 }
             }
-            Object result = call(lease.classLoader(), () -> DisklessClassLoaderContext.invoke(method, delegate, args));
-            Class<?> capability = CAPABILITY_TYPES.get(method.getName());
-            if (capability != null && result instanceof Optional<?> optional) {
-                return optional.map(service -> Proxy.newProxyInstance(capability.getClassLoader(),
-                    new Class<?>[] {capability},
-                    (serviceProxy, serviceMethod, serviceArgs) -> call(lease.classLoader(),
-                        () -> DisklessClassLoaderContext.invoke(serviceMethod, service, serviceArgs))));
-            }
-            return result;
+            return call(lease.classLoader(), () -> DisklessClassLoaderContext.invoke(method, delegate, args));
         }
     }
 

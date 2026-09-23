@@ -22,7 +22,7 @@ import java.util.function.Supplier
 import io.aiven.inkless.consume.ConcatenatedRecords
 import kafka.server.DisklessOffsetJob
 import io.aiven.inkless.engine.Fetcher
-import io.aiven.inkless.engine.DisklessEngine.{ FetchAvailability}
+import io.aiven.inkless.engine.Fetcher.{FetchAvailability}
 import kafka.cluster.Partition
 import kafka.server._
 import kafka.server.metadata.InklessMetadataView

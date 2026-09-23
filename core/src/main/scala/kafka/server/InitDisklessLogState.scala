@@ -16,8 +16,8 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.LogTransitionSupport
-import io.aiven.inkless.engine.LogTransitionSupport.{ProducerState, LogInitialization}
+import io.aiven.inkless.engine.DisklessEngine
+import io.aiven.inkless.engine.LogTransition.{ProducerState, LogInitialization}
 import kafka.cluster.Partition
 import kafka.server.InitDisklessLogBatchQueue.ParsedResponse
 import kafka.utils.Logging
@@ -230,7 +230,7 @@ object AwaitingMetadata {
 
   def sendBatch(
     states: Iterable[AwaitingMetadata],
-    destination: LogTransitionSupport,
+    destination: DisklessEngine,
     brokerId: Int,
     brokerEpoch: Long,
     onBatchComplete: Either[String, Iterable[ParsedResponse]] => Unit

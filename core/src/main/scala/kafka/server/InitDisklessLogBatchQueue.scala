@@ -17,7 +17,7 @@
 package kafka.server
 
 import kafka.server.InitDisklessLogBatchQueue.ParsedResponse
-import io.aiven.inkless.engine.LogTransitionSupport
+import io.aiven.inkless.engine.DisklessEngine
 import kafka.utils.Logging
 import org.apache.kafka.clients.ClientResponse
 import org.apache.kafka.common.TopicPartition
@@ -338,7 +338,7 @@ class SendingToControllerBatchQueue(
 }
 
 class AwaitingMetadataBatchQueue(
-  storage: LogTransitionSupport,
+  storage: DisklessEngine,
   scheduler: Scheduler,
   brokerId: Int,
   brokerEpochSupplier: () => Long,

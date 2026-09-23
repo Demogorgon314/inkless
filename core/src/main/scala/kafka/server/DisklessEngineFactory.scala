@@ -17,7 +17,6 @@
 package kafka.server
 
 import io.aiven.inkless.common.SharedState
-import io.aiven.inkless.consolidation.InklessConsolidation
 import io.aiven.inkless.control_plane.ControlPlane
 import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessTopicLifecycle, InklessDisklessEngine, InklessTopicLifecycle}
 import kafka.server.metadata.{InklessMetadataView, KafkaDisklessMetadataSnapshot}
@@ -28,11 +27,8 @@ import org.apache.kafka.storage.log.metrics.BrokerTopicStats
 
 import scala.jdk.OptionConverters._
 
-/** Assembles the generic engine and, only for Inkless, its internal consolidation service. */
+/** Assembles one engine and resource owner for either storage implementation. */
 object DisklessEngineFactory {
-  /** The engine owns all resources; consolidation is a borrowed native-only service. */
-  final case class BrokerStorage(engine: DisklessEngine, consolidation: Option[InklessConsolidation])
-
   final class ControllerStorage(val lifecycle: DisklessTopicLifecycle) extends AutoCloseable {
     private val contracts = lifecycle match {
       case _: DisklessTopicLifecycle.RequestDriven if lifecycle.isInstanceOf[DisklessTopicLifecycle.MetadataDriven] =>
@@ -69,20 +65,17 @@ object DisklessEngineFactory {
              metadata: InklessMetadataView,
              metrics: BrokerTopicStats,
              defaultLogConfig: () => LogConfig,
-             controlPlane: Option[ControlPlane]): Option[BrokerStorage] = {
+             controlPlane: Option[ControlPlane]): Option[DisklessEngine] = {
     if (!config.disklessStorageSystemEnabled) return None
     if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       val context = new DisklessEngine.Context(time, config.brokerId, metrics, config.extractLogConfigMap,
         () => new KafkaDisklessMetadataSnapshot(metadataCache.currentImage()))
-      Some(BrokerStorage(DisklessEngines.loadBroker(config.originals, context), None))
+      Some(DisklessEngines.loadBroker(config.originals, context))
     } else {
       controlPlane.map { cp =>
         val state = SharedState.initialize(time, config.brokerId, config.inklessConfig, metadata, cp,
           metrics, () => defaultLogConfig())
-        try {
-          val engine = nativeEngine(config, state)
-          BrokerStorage(engine, engine.consolidation().toScala)
-        }
+        try nativeEngine(config, state)
         catch {
           case failure: Throwable =>
             try state.close()

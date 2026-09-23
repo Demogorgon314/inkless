@@ -18,6 +18,7 @@
 
 package io.aiven.inkless.consolidation
 
+import io.aiven.inkless.engine.DisklessEngine
 import org.apache.kafka.common.protocol.Errors
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager
@@ -30,7 +31,7 @@ import scala.jdk.CollectionConverters._
 
 class ConsolidatedDisklessLogPruner(replicaManager: ReplicaManager,
                                     inklessMetadataView: InklessMetadataView,
-                                    storage: InklessConsolidation) extends Runnable with Logging {
+                                    storage: DisklessEngine) extends Runnable with Logging {
 
   override def run(): Unit = {
     // Read the classic-to-diskless start offset once per partition and thread it through, so the
@@ -61,7 +62,7 @@ class ConsolidatedDisklessLogPruner(replicaManager: ReplicaManager,
         }
       }.toMap.asJava
     if (!requests.isEmpty) {
-      storage.prune(requests).asScala.foreach { case (topicIdPartition, result) =>
+      storage.reclaimReplicatedRecords(requests).asScala.foreach { case (topicIdPartition, result) =>
         if (result.error() != Errors.NONE) {
           logger.warn("Prune diskless logs did not apply for {} (control plane reported {})",
             topicIdPartition,

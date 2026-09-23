@@ -20,7 +20,7 @@ package io.aiven.inkless.consolidation
 
 import io.aiven.inkless.control_plane.{ControlPlane, PruneDisklessLogsError, PruneDisklessLogsResponse}
 import io.aiven.inkless.control_plane.PruneDisklessLogsRequest
-import io.aiven.inkless.engine.DisklessEnginesTest.nativeConsolidation
+import io.aiven.inkless.engine.DisklessEnginesTest.nativeEngine
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager
 import kafka.server.metadata.InklessMetadataView
@@ -76,7 +76,7 @@ class ConsolidatedDisklessLogPrunerTest {
       util.Collections.emptyList()
     })
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     assertNotNull(captured)
     assertEquals(1, captured.size())
@@ -103,7 +103,7 @@ class ConsolidatedDisklessLogPrunerTest {
       util.Collections.emptyList()
     })
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     assertNotNull(captured)
     assertEquals(1, captured.size())
@@ -122,7 +122,7 @@ class ConsolidatedDisklessLogPrunerTest {
     val partition = readyPartition(50L)
     when(rm.getPartitionOrError(topicPartition)).thenReturn(Right(partition))
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(partition).getSafeConsolidatedDisklessPruneOffset(50L)
     verify(cp, never()).pruneDisklessLogs(any())
@@ -138,7 +138,7 @@ class ConsolidatedDisklessLogPrunerTest {
     val partition = readyPartition(-1L)
     when(rm.getPartitionOrError(topicPartition)).thenReturn(Right(partition))
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(cp, never()).pruneDisklessLogs(any())
   }
@@ -153,7 +153,7 @@ class ConsolidatedDisklessLogPrunerTest {
     when(view.getClassicToDisklessStartOffset(topicPartition))
       .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(rm, never()).getPartitionOrError(topicPartition)
     verify(cp, never()).pruneDisklessLogs(any())
@@ -170,7 +170,7 @@ class ConsolidatedDisklessLogPrunerTest {
     when(partition.topicId).thenReturn(None)
     when(rm.getPartitionOrError(topicPartition)).thenReturn(Right(partition))
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(cp, never()).pruneDisklessLogs(any())
   }
@@ -190,7 +190,7 @@ class ConsolidatedDisklessLogPrunerTest {
       util.List.of(new PruneDisklessLogsResponse(responseTip, -1, PruneDisklessLogsError.UNKNOWN_TOPIC_OR_PARTITION))
     )
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(partition, never()).maybeAdvanceConsolidationPruneFloor(anyLong())
   }
@@ -210,7 +210,7 @@ class ConsolidatedDisklessLogPrunerTest {
       util.List.of(new PruneDisklessLogsResponse(responseTip, 88L, PruneDisklessLogsError.NONE))
     )
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(partition).maybeAdvanceConsolidationPruneFloor(88L)
   }
@@ -232,7 +232,7 @@ class ConsolidatedDisklessLogPrunerTest {
       util.List.of(new PruneDisklessLogsResponse(responseTip, 88L, PruneDisklessLogsError.NONE))
     )
 
-    new ConsolidatedDisklessLogPruner(rm, view, nativeConsolidation(cp)).run()
+    new ConsolidatedDisklessLogPruner(rm, view, nativeEngine(cp)).run()
 
     verify(partition, never()).maybeAdvanceConsolidationPruneFloor(anyLong())
   }

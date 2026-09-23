@@ -19,7 +19,7 @@
 package io.aiven.inkless.consolidation
 
 import io.aiven.inkless.engine.Fetcher
-import io.aiven.inkless.engine.DisklessEngine.{ FetchProbe, FetchAvailability}
+import io.aiven.inkless.engine.Fetcher.{FetchProbe, FetchAvailability}
 import org.mockito.stubbing.Answer
 import scala.jdk.CollectionConverters._
 import io.aiven.inkless.control_plane.{BatchInfo, BatchMetadata, FindBatchResponse}

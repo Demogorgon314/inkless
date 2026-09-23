@@ -49,7 +49,6 @@ import java.io.File
 import java.util
 import java.util.{Collections, Optional, Properties}
 import scala.jdk.CollectionConverters._
-import scala.jdk.OptionConverters._
 
 /**
  * Invariant tests for the diskless switch recovery paths.
@@ -250,7 +249,6 @@ class DisklessSwitchInvariantsTest {
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = mock(classOf[AlterPartitionManager]),
       disklessEngine = Some(engine),
-      consolidationSupport = engine.consolidation().toScala,
       inklessMetadataView = Some(inklessMetadata),
     ) {
       override protected def createReplicaFetcherManager(

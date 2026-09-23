@@ -88,7 +88,6 @@ import java.util.concurrent.{CompletableFuture, CountDownLatch, TimeUnit}
 import java.util.function.Consumer
 import scala.collection.{Map, Seq, mutable}
 import scala.jdk.CollectionConverters._
-import scala.jdk.OptionConverters._
 
 class ReplicaManagerInklessTest {
 
@@ -185,6 +184,29 @@ class ReplicaManagerInklessTest {
   }
 
   @Test
+  def testUnadvertisedDeleteRecordsDoesNotInvokeEngine(): Unit = {
+    val pluginConstructor = mockConstruction(classOf[TestDisklessEngine])
+    try {
+      val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
+        engineClassName = Some(classOf[io.aiven.inkless.engine.DisklessEnginesTest.TestProvider].getName))
+      try {
+        val engine = pluginConstructor.constructed().get(0)
+        assertTrue(engine.capabilities().isEmpty)
+        var response: Map[TopicPartition, DeleteRecordsPartitionResult] = Map.empty
+        replicaManager.deleteRecords(0L, Map(disklessTopicPartition.topicPartition() -> 10L),
+          result => response = result)
+        assertEquals(Errors.UNKNOWN_SERVER_ERROR.code,
+          response(disklessTopicPartition.topicPartition()).errorCode())
+        verify(engine, never()).deleteRecords(any())
+      } finally {
+        replicaManager.shutdown(checkpointHW = false)
+      }
+    } finally {
+      pluginConstructor.close()
+    }
+  }
+
+  @Test
   def testConfiguredEngineOwnsDisklessDataRequests(): Unit = {
     val appendResult = util.Map.of(disklessTopicPartition, new PartitionResponse(Errors.NONE))
     val fetchResult = util.Map.of(disklessTopicPartition, new FetchPartitionData(
@@ -192,10 +214,9 @@ class ReplicaManagerInklessTest {
       Optional.empty(), OptionalInt.empty(), false))
     val offsetResult = util.Map.of(disklessTopicPartition,
       new OffsetReader.ListOffsetsResult(Errors.NONE, 0L, 123L, Optional.of[Integer](0)))
-    val deleter = mock(classOf[DisklessEngine.RecordDeleter])
     val initializer: MockedConstruction.MockInitializer[TestDisklessEngine] = {
       case (engine, _) =>
-        when(engine.recordDeleter()).thenReturn(Optional.of(deleter))
+        when(engine.capabilities()).thenReturn(util.Set.of(DisklessEngine.Capability.DELETE_RECORDS))
         when(engine.append(any(), any(), any())).thenReturn(CompletableFuture.completedFuture(appendResult))
         when(engine.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(fetchResult))
         when(engine.listOffsets(any())).thenReturn(CompletableFuture.completedFuture(offsetResult))
@@ -234,14 +255,14 @@ class ReplicaManagerInklessTest {
         assertEquals(123L, offsets.iterator().next().partitions().get(0).offset())
         verify(engine).listOffsets(any())
 
-        when(deleter.deleteRecords(any())).thenReturn(
+        when(engine.deleteRecords(any())).thenReturn(
           CompletableFuture.failedFuture(new KafkaStorageException("Storage unavailable")))
         var deleteResponse: Map[TopicPartition, DeleteRecordsPartitionResult] = Map.empty
         replicaManager.deleteRecords(0L, Map(disklessTopicPartition.topicPartition() -> 10L),
           response => deleteResponse = response)
         assertEquals(Errors.KAFKA_STORAGE_ERROR.code(),
           deleteResponse(disklessTopicPartition.topicPartition()).errorCode())
-        verify(deleter).deleteRecords(util.Map.of(disklessTopicPartition.topicPartition(), java.lang.Long.valueOf(10L)))
+        verify(engine).deleteRecords(util.Map.of(disklessTopicPartition.topicPartition(), java.lang.Long.valueOf(10L)))
         assertTrue(appendConstructor.constructed().isEmpty)
         assertTrue(fetchConstructor.constructed().isEmpty)
         assertTrue(offsetConstructor.constructed().isEmpty)
@@ -8914,7 +8935,6 @@ class ReplicaManagerInklessTest {
       disklessEngine = if (engineClassName.isDefined) {
         Some(DisklessEngines.loadBroker(config.originals, null))
       } else nativeEngine,
-      consolidationSupport = nativeEngine.flatMap(_.consolidation().toScala),
       inklessMetadataView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,
       delayedFetchPurgatoryParam = delayedFetchPurgatory,

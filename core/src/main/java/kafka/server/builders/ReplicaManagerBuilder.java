@@ -134,7 +134,6 @@ public class ReplicaManagerBuilder {
                              DirectoryEventHandler.NOOP,
                              new DelayedActionQueue(),
                              Option.empty(),
-                             Option.empty(),
                              Option.apply(inklessMetadataView),
                              Option.empty()
             );

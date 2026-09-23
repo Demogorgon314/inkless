@@ -34,7 +34,6 @@ import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 
 import io.aiven.inkless.common.SharedState;
-import io.aiven.inkless.consolidation.InklessConsolidation;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.Reader;
 import io.aiven.inkless.control_plane.AdvanceCrossTierLogStartOffsetRequest;
@@ -43,7 +42,7 @@ import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.PruneDisklessLogsError;
 import io.aiven.inkless.control_plane.PruneDisklessLogsRequest;
 
-final class InklessConsolidationSupport implements InklessConsolidation, Closeable {
+final class InklessConsolidationSupport implements LogRetention, Fetcher, Closeable {
     private final SharedState state;
     private final Optional<FetchHandler> fetchHandler;
 
@@ -115,7 +114,7 @@ final class InklessConsolidationSupport implements InklessConsolidation, Closeab
     }
 
     @Override
-    public Map<TopicIdPartition, OffsetResult> prune(Map<TopicIdPartition, Long> highestTieredOffsets) {
+    public Map<TopicIdPartition, OffsetResult> reclaimReplicatedRecords(Map<TopicIdPartition, Long> highestTieredOffsets) {
         var requests = highestTieredOffsets.entrySet().stream()
             .map(e -> new PruneDisklessLogsRequest(e.getKey(), e.getValue())).toList();
         var result = new LinkedHashMap<TopicIdPartition, OffsetResult>();

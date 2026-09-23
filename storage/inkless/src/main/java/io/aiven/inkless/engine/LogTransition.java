@@ -25,9 +25,9 @@ import java.util.List;
 /**
  * Takes over classic logs after Kafka commits the transition.
  * Kafka owns the transition state machine and retries; implementations own external log metadata.
- * Methods retain the synchronous contract. The engine owns the returned service's lifetime.
+ * Methods retain the synchronous contract and require the LOG_TRANSITION capability.
  */
-public interface LogTransitionSupport {
+public interface LogTransition {
     record ProducerState(long producerId, short producerEpoch, int baseSequence, int lastSequence,
                          long assignedOffset, long batchMaxTimestamp) { }
 
@@ -38,8 +38,12 @@ public interface LogTransitionSupport {
      * Applies the seal and producer state after KRaft commits the transition, on the leader only.
      * Returns outcomes in request order; INVALID_REQUEST means already initialized.
      */
-    List<Errors> initializeLogs(List<LogInitialization> requests);
+    default List<Errors> initializeLogs(List<LogInitialization> requests) {
+        throw new UnsupportedOperationException("Log transition is not supported");
+    }
 
     /** Reconciles existing external log metadata with the seal committed in KRaft. */
-    Errors repairLog(TopicIdPartition partition, long startOffset);
+    default Errors repairLog(TopicIdPartition partition, long startOffset) {
+        throw new UnsupportedOperationException("Log transition is not supported");
+    }
 }

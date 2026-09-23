@@ -34,19 +34,16 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.ParameterizedType;
 import java.net.URL;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
 import io.aiven.inkless.common.SharedState;
-import io.aiven.inkless.consolidation.InklessConsolidation;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.ControlPlane;
@@ -76,14 +73,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class DisklessEnginesTest {
-    public static InklessConsolidation nativeConsolidation(ControlPlane controlPlane) {
-        var state = mock(SharedState.class);
+    public static DisklessEngine nativeEngine(ControlPlane controlPlane) {
+        var state = mock(SharedState.class, RETURNS_DEEP_STUBS);
         when(state.controlPlane()).thenReturn(controlPlane);
-        return new InklessConsolidationSupport(state, Optional.empty());
-    }
-
-    public static LogTransitionSupport nativeLogTransition(ControlPlane controlPlane) {
-        return new InklessLogTransitionSupport(controlPlane);
+        try (var append = mockConstruction(AppendHandler.class);
+             var fetch = mockConstruction(FetchHandler.class);
+             var offsets = mockConstruction(FetchOffsetHandler.class);
+             var deletes = mockConstruction(DeleteRecordsInterceptor.class);
+             var retention = mockConstruction(RetentionEnforcer.class);
+             var cleaner = mockConstruction(FileCleaner.class);
+             var purger = mockConstruction(TopicPurger.class)) {
+            return new InklessDisklessEngine(state);
+        }
     }
 
     @Test
@@ -165,23 +166,20 @@ public class DisklessEnginesTest {
     public void transitionCallsUsePluginContextAndRestoreItAfterFailure() throws Exception {
         var original = Thread.currentThread().getContextClassLoader();
         var delegate = mock(DisklessEngine.class);
-        var storage = mock(LogTransitionSupport.class);
-        when(delegate.logTransition()).thenReturn(Optional.of(storage));
         try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader());
              var engine = DisklessClassLoaderContext.leased(DisklessEngine.class, delegate,
                  DisklessClassLoaderRegistry.acquire(new URL[0], loader))) {
-            when(storage.initializeLogs(any())).thenAnswer(invocation -> {
+            when(delegate.initializeLogs(any())).thenAnswer(invocation -> {
                 assertSame(loader, Thread.currentThread().getContextClassLoader());
                 return List.of(Errors.NONE);
             });
-            when(storage.repairLog(any(), anyLong())).thenAnswer(invocation -> {
+            when(delegate.repairLog(any(), anyLong())).thenAnswer(invocation -> {
                 assertSame(loader, Thread.currentThread().getContextClassLoader());
                 throw new IllegalStateException("Storage unavailable");
             });
-            var capability = engine.logTransition().orElseThrow();
-            assertEquals(List.of(Errors.NONE), capability.initializeLogs(List.of()));
+            assertEquals(List.of(Errors.NONE), engine.initializeLogs(List.of()));
             assertSame(original, Thread.currentThread().getContextClassLoader());
-            assertThrows(IllegalStateException.class, () -> capability.repairLog(null, 0L));
+            assertThrows(IllegalStateException.class, () -> engine.repairLog(null, 0L));
             assertSame(original, Thread.currentThread().getContextClassLoader());
         }
         verify(delegate).close();
@@ -207,30 +205,27 @@ public class DisklessEnginesTest {
     }
 
     @Test
-    public void everyOptionalCapabilityUsesAndRestoresPluginContext() throws Exception {
+    public void everyEngineOperationUsesAndRestoresPluginContext() throws Exception {
         var original = Thread.currentThread().getContextClassLoader();
         for (var method : DisklessEngine.class.getMethods()) {
-            if (method.getReturnType() != Optional.class) {
+            if (method.getName().equals("close")) {
                 continue;
             }
-            var resultType = (ParameterizedType) method.getGenericReturnType();
-            var capabilityType = (Class<?>) resultType.getActualTypeArguments()[0];
-            var failure = new IllegalStateException("Capability failure");
+            var failure = new IllegalStateException("Engine operation failure");
             try (var loader = new KafkaPluginClassLoader(new URL[0], getClass().getClassLoader())) {
-                var capability = mock(capabilityType, invocation -> {
-                    assertSame(loader, Thread.currentThread().getContextClassLoader(), method.getName());
-                    throw failure;
+                var delegate = mock(DisklessEngine.class, invocation -> {
+                    if (invocation.getMethod().equals(method)) {
+                        assertSame(loader, Thread.currentThread().getContextClassLoader(), method.getName());
+                        throw failure;
+                    }
+                    return null;
                 });
-                var delegate = mock(DisklessEngine.class, invocation ->
-                    invocation.getMethod().equals(method) ? Optional.of(capability) : null);
                 try (var engine = DisklessClassLoaderContext.leased(DisklessEngine.class, delegate,
                     DisklessClassLoaderRegistry.acquire(new URL[0], loader))) {
-                    var wrapped = ((Optional<?>) method.invoke(engine)).orElseThrow();
-                    var operation = capabilityType.getMethods()[0];
-                    Object[] arguments = Arrays.stream(operation.getParameterTypes())
+                    Object[] arguments = Arrays.stream(method.getParameterTypes())
                         .map(type -> Array.get(Array.newInstance(type, 1), 0)).toArray();
                     var thrown = assertThrows(InvocationTargetException.class,
-                        () -> operation.invoke(wrapped, arguments), method.getName());
+                        () -> method.invoke(engine, arguments), method.getName());
                     assertSame(failure, thrown.getCause());
                     assertSame(original, Thread.currentThread().getContextClassLoader());
                 }

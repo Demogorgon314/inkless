@@ -26,7 +26,7 @@ import io.aiven.inkless.control_plane.InitDisklessLogProducerState;
 import io.aiven.inkless.control_plane.InitDisklessLogRequest;
 import io.aiven.inkless.control_plane.RepairDisklessLogRequest;
 
-final class InklessLogTransitionSupport implements LogTransitionSupport {
+final class InklessLogTransitionSupport implements LogTransition {
     private final ControlPlane controlPlane;
 
     InklessLogTransitionSupport(ControlPlane controlPlane) {
