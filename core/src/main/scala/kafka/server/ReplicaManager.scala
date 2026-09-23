@@ -18,11 +18,10 @@ package kafka.server
 
 import com.yammer.metrics.core.Meter
 import io.aiven.inkless.common.SharedState
-import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, FetchOffsetHandler, Reader}
+import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, Reader}
 import io.aiven.inkless.storage_backend.common.ObjectFetcher
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetRequest, AdvanceCrossTierLogStartOffsetResponse, BatchInfo, FindBatchRequest, FindBatchResponse, InitDisklessLogProducerState, RepairDisklessLogRequest, ListOffsetsRequest => CpListOffsetsRequest}
 import io.aiven.inkless.delete.{DeleteRecordsInterceptor, FileCleaner, RetentionEnforcer, TopicPurger}
-import io.aiven.inkless.produce.AppendHandler
 import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, InklessDisklessEngine}
 import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, ConsolidationFetcherManager, ConsolidationMetrics, ConsolidationReconciler, DelayedConsolidationFetch}
 import kafka.cluster.Partition
@@ -265,9 +264,6 @@ class ReplicaManager(val config: KafkaConfig,
       "ConsolidationFetch", config.brokerId, 0)
 
   private val _inklessMetadataView: InklessMetadataView = inklessMetadataView.getOrElse(new InklessMetadataView(metadataCache.asInstanceOf[KRaftMetadataCache], () => config.extractLogConfigMap))
-  private lazy val inklessAppendHandler: Option[AppendHandler] = inklessSharedState.map(new AppendHandler(_))
-  private lazy val inklessFetchHandler: Option[FetchHandler] = inklessSharedState.map(new FetchHandler(_))
-  private lazy val inklessFetchOffsetHandler: Option[FetchOffsetHandler] = inklessSharedState.map(new FetchOffsetHandler(_))
   private val disklessEngine: Option[DisklessEngine] =
     if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       require(!config.disklessManagedReplicasEnabled,
@@ -280,8 +276,7 @@ class ReplicaManager(val config: KafkaConfig,
         () => metadataCache.asInstanceOf[KRaftMetadataCache].currentImage().highestOffsetAndEpoch().offset())
       Some(DisklessEngines.load(config.originals, () => throw new IllegalStateException("Missing engine class"), context))
     } else {
-      inklessSharedState.map(_ => new InklessDisklessEngine(
-        inklessAppendHandler.get, inklessFetchHandler.get, inklessFetchOffsetHandler.get))
+      inklessSharedState.map(new InklessDisklessEngine(_))
     }
   private val disklessFetchOffsetRouter = new DisklessFetchOffsetRouter(
     _inklessMetadataView,
@@ -301,7 +296,7 @@ class ReplicaManager(val config: KafkaConfig,
     else
       None
   private val consolidationMetrics: Option[ConsolidationMetrics] =
-    if (config.disklessRemoteStorageConsolidationEnabled && inklessFetchHandler.isDefined && inklessFetchOffsetHandler.isDefined)
+    if (config.disklessRemoteStorageConsolidationEnabled && inklessSharedState.isDefined && disklessEngine.isDefined)
       Some(new ConsolidationMetrics())
     else
       None
@@ -353,19 +348,19 @@ class ReplicaManager(val config: KafkaConfig,
     if (config.disklessRemoteStorageConsolidationEnabled) {
       // consolidationQuotaManager is unconditionally Some(...) under this same flag (unlike the
       // handlers, which depend on inklessSharedState), so it needs no emptiness check here.
-      if (consolidationFetchHandler.isEmpty || inklessFetchOffsetHandler.isEmpty) {
+      if (consolidationFetchHandler.isEmpty || disklessEngine.isEmpty) {
         throw new KafkaException("Remote storage consolidation is enabled, however Inkless doesn't seem to have " +
           "configured fetch handler or fetch offset handler ready.")
       }
-      consolidationFetchHandler.zip(inklessFetchOffsetHandler)
+      consolidationFetchHandler.zip(disklessEngine)
         .zip(consolidationQuotaManager)
-        .map { case ((fetchHandler, fetchOffsetHandler), quotaMgr) =>
+        .map { case ((fetchHandler, engine), quotaMgr) =>
           new ConsolidationFetcherManager(
             config,
             this,
             quotaMgr,
             fetchHandler,
-            fetchOffsetHandler,
+            () => engine.createOffsetJob(),
             consolidationMetrics
           )
         }

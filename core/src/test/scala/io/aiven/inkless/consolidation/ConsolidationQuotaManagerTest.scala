@@ -83,7 +83,7 @@ class ConsolidationQuotaManagerTest {
     new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      fetchOffsetHandler,
+      () => fetchOffsetHandler.createJob(),
       replicaManager,
       kafkaConfig,
       quota,

@@ -18,7 +18,8 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.{FetchHandler, FetchOffsetHandler}
+import io.aiven.inkless.consume.FetchHandler
+import io.aiven.inkless.engine.DisklessEngine.OffsetJob
 import kafka.server.{KafkaConfig, ReplicaManager, ReplicaQuota}
 import kafka.utils.Logging
 import org.apache.kafka.common.errors.{KafkaStorageException, UnknownTopicOrPartitionException}
@@ -51,14 +52,15 @@ import scala.util.Try
 /**
  * Leader endpoint for consolidation fetching from Inkless (object storage) on this broker.
  * [[FetchHandler]] performs the same diskless fetch path as the broker's main fetch pipeline;
- * [[FetchOffsetHandler]] backs list-offsets style APIs used by [[kafka.server.AbstractFetcherThread]].
+ * The engine's offset jobs back list-offsets style APIs used by [[kafka.server.AbstractFetcherThread]].
  *
- * Fetch and offset handler instances are owned by [[kafka.server.ReplicaManager]]; this class does not close them.
+ * ReplicaManager owns the consolidation fetch handler; the diskless engine owns the offset handler.
+ * This endpoint creates offset jobs without owning or closing either handler.
  */
 class DisklessLeaderEndPoint(
   brokerEndPoint: BrokerEndPoint,
   fetchHandler: FetchHandler,
-  fetchOffsetHandler: FetchOffsetHandler,
+  createOffsetJob: () => OffsetJob,
   replicaManager: ReplicaManager,
   brokerConfig: KafkaConfig,
   quota: ReplicaQuota,
@@ -336,7 +338,7 @@ class DisklessLeaderEndPoint(
     new OffsetAndEpoch(-1L, -1)
 
   private def listDisklessOffset(topicPartition: TopicPartition, currentLeaderEpoch: Int, timestamp: Long): OffsetAndEpoch = {
-    val job = fetchOffsetHandler.createJob()
+    val job = createOffsetJob()
     if (!job.mustHandle(topicPartition.topic)) {
       throw Errors.UNKNOWN_TOPIC_OR_PARTITION.exception()
     }
@@ -384,7 +386,7 @@ class DisklessLeaderEndPoint(
   /**
    * Resolve the leader epoch for a diskless list-offsets result.
    *
-   * [[FetchOffsetHandler]] always stamps a placeholder `INITIAL_LEADER_EPOCH` (0), so
+   * The native offset handler always stamps a placeholder `INITIAL_LEADER_EPOCH` (0), so
    * [[TimestampAndOffset.leaderEpoch]] cannot be trusted. When the partition has a seal and a captured
    * diskless leader epoch `E_d` and the offset is at/above the seal, it falls in the diskless region
    * `[seal, LEO)` that was tiered to remote under `E_d`, so return `E_d`. Otherwise (offsets below the
@@ -427,7 +429,7 @@ class DisklessLeaderEndPoint(
       return util.Map.of()
     }
 
-    val job = fetchOffsetHandler.createJob()
+    val job = createOffsetJob()
     val futures = mutable.Map.empty[TopicPartition, CompletableFuture[FileRecordsOrError]]
     // Partitions whose queried epoch resolves to the seal without needing a diskless list-offsets call.
     val sealEndOffsets = mutable.Map.empty[TopicPartition, Long]

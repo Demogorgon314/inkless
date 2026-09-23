@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import io.aiven.inkless.common.SharedState;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.produce.AppendHandler;
@@ -39,7 +40,11 @@ public final class InklessDisklessEngine implements DisklessEngine {
     private final FetchHandler fetchHandler;
     private final FetchOffsetHandler offsetHandler;
 
-    public InklessDisklessEngine(AppendHandler appendHandler, FetchHandler fetchHandler, FetchOffsetHandler offsetHandler) {
+    public InklessDisklessEngine(SharedState sharedState) {
+        this(new AppendHandler(sharedState), new FetchHandler(sharedState), new FetchOffsetHandler(sharedState));
+    }
+
+    InklessDisklessEngine(AppendHandler appendHandler, FetchHandler fetchHandler, FetchOffsetHandler offsetHandler) {
         this.appendHandler = appendHandler;
         this.fetchHandler = fetchHandler;
         this.offsetHandler = offsetHandler;

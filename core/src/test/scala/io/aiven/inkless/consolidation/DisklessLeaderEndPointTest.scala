@@ -113,7 +113,7 @@ class DisklessLeaderEndPointTest {
     new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      fetchOffsetHandler,
+      () => fetchOffsetHandler.createJob(),
       replicaManager,
       kafkaConfig,
       quota,
@@ -1231,7 +1231,7 @@ class DisklessLeaderEndPointTest {
         replicaManager,
         mock(classOf[ReplicationQuotaManager]),
         mock(classOf[FetchHandler]),
-        mock(classOf[FetchOffsetHandler]),
+        () => mock(classOf[FetchOffsetHandler.Job]),
         Some(metrics)
       )
       try {
@@ -1288,7 +1288,7 @@ class DisklessLeaderEndPointTest {
         replicaManager,
         mock(classOf[ReplicationQuotaManager]),
         mock(classOf[FetchHandler]),
-        mock(classOf[FetchOffsetHandler]),
+        () => mock(classOf[FetchOffsetHandler.Job]),
         Some(metrics)
       )
       try {
@@ -1590,7 +1590,7 @@ class DisklessLeaderEndPointTest {
     val endPoint = new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      fetchOffsetHandler,
+      () => fetchOffsetHandler.createJob(),
       replicaManager,
       config,
       QuotaFactory.UNBOUNDED_QUOTA,
@@ -1637,7 +1637,7 @@ class DisklessLeaderEndPointTest {
     val endPoint = new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      fetchOffsetHandler,
+      () => fetchOffsetHandler.createJob(),
       replicaManager,
       config,
       QuotaFactory.UNBOUNDED_QUOTA,

@@ -55,7 +55,14 @@ Broker metadata updates
 
 The broker keeps one dispatch layer. The integration does not copy UFK's
 `DisklessStorageReplicaManagerSupport` beside Inkless's routing. The default
-adapter reuses `AppendHandler`, `FetchHandler`, and `FetchOffsetHandler`.
+adapter creates and owns `AppendHandler`, `FetchHandler`, and
+`FetchOffsetHandler` from `SharedState`, and closes them together. Consolidation
+receives an offset-job factory instead of a reference to the native offset
+handler. Its dedicated background fetch handler stays separate.
+
+`ReplicaManager` retains `InklessMetadataView` for topic routing, leader epochs,
+and cross-tier offset decisions. These broker responsibilities apply regardless
+of the selected storage engine.
 
 `DisklessEngine.Context` supplies Kafka-owned services and metadata lookups.
 The Ursa adapter translates append, fetch, and offset lookup and invokes the

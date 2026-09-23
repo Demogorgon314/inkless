@@ -124,7 +124,7 @@ class ConsolidationFetcherThreadTest {
     val endpoint = new DisklessLeaderEndPoint(
       new BrokerEndPoint(0, "localhost", 9092),
       fetchHandler,
-      mock(classOf[FetchOffsetHandler]),
+      () => mock(classOf[FetchOffsetHandler.Job]),
       replicaManager,
       config,
       mock(classOf[ReplicaQuota]),
@@ -358,7 +358,7 @@ class ConsolidationFetcherThreadTest {
     val endpoint = new DisklessLeaderEndPoint(
       brokerEndPoint,
       fetchHandler,
-      fetchOffsetHandler,
+      () => fetchOffsetHandler.createJob(),
       replicaManager,
       config,
       endpointQuota,
@@ -661,7 +661,7 @@ class ConsolidationFetcherThreadTest {
       mock(classOf[ReplicaManager]),
       mock(classOf[ReplicationQuotaManager]),
       mock(classOf[FetchHandler]),
-      mock(classOf[FetchOffsetHandler]),
+      () => mock(classOf[FetchOffsetHandler.Job]),
       Some(metrics)
     )
     try {
