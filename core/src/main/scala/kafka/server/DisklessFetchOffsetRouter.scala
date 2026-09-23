@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.consume.FetchOffsetHandler
+import io.aiven.inkless.engine.DisklessEngine.OffsetJob
 import kafka.server.metadata.InklessMetadataView
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.ApiException
@@ -55,7 +55,7 @@ import scala.jdk.OptionConverters.RichOptional
  *      follower would try to truncate to or fetch from offsets that live only in object storage:
  *      fetch offset only in the classic path.
  *
- * Per request, the caller obtains a per-request `FetchOffsetHandler.Job` via [[createJob]],
+ * Per request, the caller obtains a per-request `OffsetJob` from the diskless engine,
  * routes each diskless-managed partition through [[route]] (passing classic-side callbacks),
  * and finally calls `job.start()` to fire the underlying control plane job.
  */
@@ -85,8 +85,8 @@ class DisklessFetchOffsetRouter(
    *                                      given `(topicPartition, partition, allowFromFollower)`.
    */
   def route(
-    job: FetchOffsetHandler.Job,
-    newJob: () => FetchOffsetHandler.Job,
+    job: OffsetJob,
+    newJob: () => OffsetJob,
     topicPartition: TopicPartition,
     partition: ListOffsetsPartition,
     replicaId: Int,
@@ -295,7 +295,7 @@ private[server] object DisklessFetchOffsetRouter {
    * (for fallbacks discovered after the caller's job has already been started); leave it
    * `false` when adding to the caller's per-request job (the caller will start it).
    */
-  private def disklessLookupOnJob(job: FetchOffsetHandler.Job,
+  private def disklessLookupOnJob(job: OffsetJob,
                                   tp: TopicPartition,
                                   partition: ListOffsetsPartition,
                                   startNow: Boolean = false): Lookup = {

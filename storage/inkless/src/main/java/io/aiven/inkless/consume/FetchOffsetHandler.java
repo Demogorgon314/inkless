@@ -57,6 +57,7 @@ import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.ListOffsetsResponse;
 import io.aiven.inkless.control_plane.MetadataView;
+import io.aiven.inkless.engine.DisklessEngine;
 
 import static org.apache.kafka.common.requests.ListOffsetsRequest.EARLIEST_TIMESTAMP;
 
@@ -98,7 +99,7 @@ public class FetchOffsetHandler implements Closeable {
         metrics.close();
     }
 
-    public static class Job {
+    public static class Job implements DisklessEngine.OffsetJob {
         private static final Logger LOGGER = LoggerFactory.getLogger(Job.class);
 
         private final MetadataView metadata;

@@ -23,6 +23,7 @@ import io.aiven.inkless.storage_backend.common.ObjectFetcher
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetRequest, AdvanceCrossTierLogStartOffsetResponse, BatchInfo, FindBatchRequest, FindBatchResponse, InitDisklessLogProducerState, RepairDisklessLogRequest, ListOffsetsRequest => CpListOffsetsRequest}
 import io.aiven.inkless.delete.{DeleteRecordsInterceptor, FileCleaner, RetentionEnforcer, TopicPurger}
 import io.aiven.inkless.produce.AppendHandler
+import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, InklessDisklessEngine}
 import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, ConsolidationFetcherManager, ConsolidationMetrics, ConsolidationReconciler, DelayedConsolidationFetch}
 import kafka.cluster.Partition
 import kafka.log.LogManager
@@ -263,9 +264,15 @@ class ReplicaManager(val config: KafkaConfig,
       "ConsolidationFetch", config.brokerId, 0)
 
   private val _inklessMetadataView: InklessMetadataView = inklessMetadataView.getOrElse(new InklessMetadataView(metadataCache.asInstanceOf[KRaftMetadataCache], () => config.extractLogConfigMap))
-  private val inklessAppendHandler: Option[AppendHandler] = inklessSharedState.map(new AppendHandler(_))
-  private val inklessFetchHandler: Option[FetchHandler] = inklessSharedState.map(new FetchHandler(_))
-  private val inklessFetchOffsetHandler: Option[FetchOffsetHandler] = inklessSharedState.map(new FetchOffsetHandler(_))
+  private lazy val inklessAppendHandler: Option[AppendHandler] = inklessSharedState.map(new AppendHandler(_))
+  private lazy val inklessFetchHandler: Option[FetchHandler] = inklessSharedState.map(new FetchHandler(_))
+  private lazy val inklessFetchOffsetHandler: Option[FetchOffsetHandler] = inklessSharedState.map(new FetchOffsetHandler(_))
+  private val disklessEngine: Option[DisklessEngine] = inklessSharedState.map { _ =>
+    require(!config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG) || !config.disklessManagedReplicasEnabled,
+      "Custom diskless engines do not support managed replicas, classic-to-diskless switching, or consolidation in this PoC")
+    DisklessEngines.load(config.originals, () => new InklessDisklessEngine(
+      inklessAppendHandler.get, inklessFetchHandler.get, inklessFetchOffsetHandler.get))
+  }
   private val disklessFetchOffsetRouter = new DisklessFetchOffsetRouter(
     _inklessMetadataView,
     config.disklessManagedReplicasEnabled,
@@ -908,8 +915,8 @@ class ReplicaManager(val config: KafkaConfig,
       tp -> new PartitionResponse(Errors.REPLICA_NOT_AVAILABLE)
     }
 
-    val disklessResponsesFuture = inklessAppendHandler match {
-      case Some(interceptor) => interceptor.handle(readyDisklessEntries.asJava, requestLocal)
+    val disklessResponsesFuture = disklessEngine match {
+      case Some(engine) => engine.append(readyDisklessEntries.asJava, requestLocal)
       case _ =>
         if (disklessEntries.nonEmpty)
           error(s"Received diskless entries to append for topics ${disklessEntries.keys.map(_.topic()).mkString(", ")} but diskless storage system is not enabled. " +
@@ -2103,7 +2110,7 @@ class ReplicaManager(val config: KafkaConfig,
                   buildErrorResponse: (Errors, ListOffsetsPartition) => ListOffsetsPartitionResponse,
                   responseCallback: Consumer[util.Collection[ListOffsetsTopicResponse]],
                   timeoutMs: Int = 0): Unit = {
-    val maybeFetchOffsetJob: Option[FetchOffsetHandler.Job] = inklessFetchOffsetHandler.map(_.createJob())
+    val maybeFetchOffsetJob = disklessEngine.map(_.createOffsetJob())
     val statusByPartition = mutable.Map[TopicPartition, ListOffsetsPartitionStatus]()
 
     val classicFetch: (TopicPartition, ListOffsetsPartition, Boolean) => ListOffsetsPartitionStatus =
@@ -2127,7 +2134,7 @@ class ReplicaManager(val config: KafkaConfig,
             ListOffsetsPartitionStatus.builder().responseOpt(Optional.of(buildErrorResponse(Errors.UNSUPPORTED_VERSION, partition))).build()
         } else if (maybeFetchOffsetJob.exists(_.mustHandle(topic.name))) {
           statusByPartition += topicPartition ->
-            disklessFetchOffsetRouter.route(maybeFetchOffsetJob.get, () => inklessFetchOffsetHandler.get.createJob(),
+            disklessFetchOffsetRouter.route(maybeFetchOffsetJob.get, () => disklessEngine.get.createOffsetJob(),
               topicPartition, partition, replicaId, version, classicLogStart, hasCompleteClassicPrefix, classicFetch)
         } else {
           statusByPartition += topicPartition -> classicFetch(topicPartition, partition, false)
@@ -2374,11 +2381,11 @@ class ReplicaManager(val config: KafkaConfig,
    */
   def fetchDisklessMessages(params: FetchParams,
                             fetchInfos: Seq[(TopicIdPartition, PartitionData)]): CompletableFuture[Seq[(TopicIdPartition, FetchPartitionData)]] = {
-    inklessFetchHandler match {
-      case Some(handler) =>
+    disklessEngine match {
+      case Some(engine) =>
         // fetchInfos.toMap would be a HashMap above 4 entries, whose iteration order ignores insertion.
         val ordered = mutable.LinkedHashMap.from(fetchInfos).asJava
-        handler.handle(params, ordered).thenApply(_.asScala.toSeq)
+        engine.fetch(params, ordered).thenApply(_.asScala.toSeq)
       case None =>
         if (fetchInfos.nonEmpty)
           error(s"Received diskless fetch request for topics ${fetchInfos.map(_._1.topic()).distinct.mkString(", ")} but diskless fetch handler is not available. " +
@@ -3578,9 +3585,7 @@ class ReplicaManager(val config: KafkaConfig,
     replicaSelectorPlugin.foreach(_.close)
     removeAllTopicMetrics()
     addPartitionsToTxnManager.foreach(_.shutdown())
-    inklessAppendHandler.foreach(_.close())
-    inklessFetchHandler.foreach(_.close())
-    inklessFetchOffsetHandler.foreach(_.close())
+    disklessEngine.foreach(_.close())
     inklessRetentionEnforcer.foreach(_.close())
     inklessFileCleaner.foreach(_.close())
     inklessTopicPurger.foreach(_.close())
@@ -3616,7 +3621,7 @@ class ReplicaManager(val config: KafkaConfig,
   def lastOffsetForLeaderEpoch(
     requestedEpochInfo: Seq[OffsetForLeaderTopic]
   ): Seq[OffsetForLeaderTopicResult] = {
-    lazy val inklessFetchOffsetHandlerJob: Option[FetchOffsetHandler.Job] = inklessFetchOffsetHandler.map(_.createJob())
+    lazy val inklessFetchOffsetHandlerJob = disklessEngine.map(_.createOffsetJob())
     var disklessOffsetForLeaderEpochRequested = false
 
     def localOffsetForLeaderEpoch(

@@ -24,6 +24,8 @@ import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, Consolidat
 import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, FetchOffsetHandler}
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetResponse, BatchInfo, BatchMetadata, ControlPlane, ControlPlaneException, FindBatchResponse, RepairDisklessLogRequest, RepairDisklessLogResponse, DeleteRecordsResponse => CpDeleteRecordsResponse, ListOffsetsRequest => CpListOffsetsRequest, ListOffsetsResponse => CpListOffsetsResponse}
 import io.aiven.inkless.produce.AppendHandler
+import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines}
+import io.aiven.inkless.engine.DisklessEnginesTest.{TestEngine => TestDisklessEngine}
 import kafka.cluster.Partition
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.metadata.InklessMetadataView
@@ -135,6 +137,72 @@ class ReplicaManagerInklessTest {
   }
   val disklessTopicPartition = new TopicIdPartition(Uuid.randomUuid(), 0, "diskless")
   val classicTopicPartition = new TopicIdPartition(Uuid.randomUuid(), 0, "classic")
+
+  @Test
+  def testConfiguredEngineOwnsDisklessDataRequests(): Unit = {
+    val appendResult = util.Map.of(disklessTopicPartition, new PartitionResponse(Errors.NONE))
+    val fetchResult = util.Map.of(disklessTopicPartition, new FetchPartitionData(
+      Errors.NONE, 123L, 0L, RECORDS, Optional.empty(), OptionalLong.empty(),
+      Optional.empty(), OptionalInt.empty(), false))
+    val offsetJob = mock(classOf[DisklessEngine.OffsetJob])
+    when(offsetJob.mustHandle(disklessTopicPartition.topic())).thenReturn(true)
+    when(offsetJob.cancelHandler()).thenReturn(new CompletableFuture[Void]())
+    when(offsetJob.add(any(), any())).thenReturn(CompletableFuture.completedFuture(
+      new OffsetResultHolder.FileRecordsOrError(Optional.empty(),
+        Optional.of(new FileRecords.TimestampAndOffset(0L, 123L, Optional.of[Integer](0))))))
+    val initializer: MockedConstruction.MockInitializer[TestDisklessEngine] = {
+      case (engine, _) =>
+        when(engine.append(any(), any())).thenReturn(CompletableFuture.completedFuture(appendResult))
+        when(engine.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(fetchResult))
+        when(engine.createOffsetJob()).thenReturn(offsetJob)
+    }
+    val pluginConstructor = mockConstruction(classOf[TestDisklessEngine], initializer)
+    val appendConstructor = mockConstruction(classOf[AppendHandler])
+    val fetchConstructor = mockConstruction(classOf[FetchHandler])
+    val offsetConstructor = mockConstruction(classOf[FetchOffsetHandler])
+    try {
+      val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
+        engineClassName = Some(classOf[TestDisklessEngine].getName))
+      val engine = pluginConstructor.constructed().get(0)
+      try {
+        val callback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
+        replicaManager.appendRecords(timeout = 0, requiredAcks = -1, internalTopicsAllowed = true,
+          origin = AppendOrigin.CLIENT, entriesPerPartition = Map(disklessTopicPartition -> RECORDS),
+          responseCallback = callback)
+        verify(callback).apply(appendResult)
+
+        val params = new FetchParams(-1, -1L, 0, 0, 1024, FetchIsolation.LOG_END, Optional.empty(), false)
+        val partitionData = new PartitionData(disklessTopicPartition.topicId(), 0L, 0L, 1024, Optional.empty())
+        val fetched = replicaManager.fetchDisklessMessages(params, Seq(disklessTopicPartition -> partitionData))
+          .get(5, TimeUnit.SECONDS)
+        assertEquals(fetchResult.asScala.toSeq, fetched)
+
+        var offsets: util.Collection[ListOffsetsTopicResponse] = null
+        replicaManager.fetchOffset(
+          topics = Seq(new ListOffsetsTopic().setName(disklessTopicPartition.topic()).setPartitions(util.List.of(
+            new ListOffsetsPartition().setPartitionIndex(0).setTimestamp(ListOffsetsRequest.LATEST_TIMESTAMP)))),
+          duplicatePartitions = Set.empty, isolationLevel = IsolationLevel.READ_UNCOMMITTED,
+          replicaId = ListOffsetsRequest.CONSUMER_REPLICA_ID, clientId = "engine-test", correlationId = 1,
+          version = 9, buildErrorResponse = (error, partition) => new ListOffsetsPartitionResponse()
+            .setPartitionIndex(partition.partitionIndex()).setErrorCode(error.code()),
+          responseCallback = result => offsets = result)
+        assertNotNull(offsets)
+        assertEquals(123L, offsets.iterator().next().partitions().get(0).offset())
+        verify(offsetJob).start()
+        assertTrue(appendConstructor.constructed().isEmpty)
+        assertTrue(fetchConstructor.constructed().isEmpty)
+        assertTrue(offsetConstructor.constructed().isEmpty)
+      } finally {
+        replicaManager.shutdown(checkpointHW = false)
+      }
+      verify(engine).close()
+    } finally {
+      offsetConstructor.close()
+      fetchConstructor.close()
+      appendConstructor.close()
+      pluginConstructor.close()
+    }
+  }
 
   @Test
   def testAppendDisklessEntries(): Unit = {
@@ -8755,9 +8823,11 @@ class ReplicaManagerInklessTest {
     initDisklessLogManager: Option[InitDisklessLogManager] = None,
     delayedFetchPurgatory: Option[DelayedOperationPurgatory[DelayedFetch]] = None,
     defaultLogConfig: Option[LogConfig] = None,
-    crossTierLogStartCache: Option[CrossTierLogStartCache] = None
+    crossTierLogStartCache: Option[CrossTierLogStartCache] = None,
+    engineClassName: Option[String] = None
   ): ReplicaManager = {
     val props = TestUtils.createBrokerConfig(1, logDirCount = 2)
+    engineClassName.foreach(name => props.put(DisklessEngines.CLASS_NAME_CONFIG, name))
     if (disklessManagedReplicasEnabled || disklessRemoteStorageConsolidationEnabled) {
       props.put(ServerConfigs.DISKLESS_STORAGE_SYSTEM_ENABLE_CONFIG, "true")
     }
