@@ -361,7 +361,7 @@ class AwaitingMetadataBatchQueue(
     if (state.metadataPayload.isDefined) {
       true
     } else {
-      state.warn(s"Skipping InitDisklessLog control-plane request because metadata payload is missing for ${state.tp}")
+      state.warn(s"Skipping diskless engine log initialization because metadata payload is missing for ${state.tp}")
       false
     }
   }

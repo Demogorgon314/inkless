@@ -36,10 +36,14 @@ public interface LogTransition {
 
     /**
      * Applies the seal and producer state after KRaft commits the transition, on the leader only.
-     * Returns outcomes in request order; INVALID_REQUEST means already initialized.
+     * Returns outcomes in request order. Initialization is idempotent: an already initialized log
+     * keeps its state and returns NONE. Kafka retries every other error.
      */
     List<Errors> initializeLogs(List<LogInitialization> requests);
 
-    /** Reconciles existing external log metadata with the seal committed in KRaft. */
+    /**
+     * Reconciles existing external log metadata with the seal committed in KRaft. Returns
+     * UNKNOWN_TOPIC_OR_PARTITION when the engine holds no log for the partition.
+     */
     Errors repairLog(TopicIdPartition partition, long startOffset);
 }

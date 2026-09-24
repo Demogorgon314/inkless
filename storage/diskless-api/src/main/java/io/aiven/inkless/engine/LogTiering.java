@@ -47,8 +47,8 @@ public interface LogTiering {
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);
 
     /**
-     * Returns only the remote start reported by the local-log leader. Never substitutes the
-     * diskless prune frontier: Kafka uses this value to decide which remote data it can reclaim.
+     * Returns only the remote start reported by the local-log leader. Never substitutes the start of
+     * the engine-resident records: Kafka uses this value to decide which remote data it can reclaim.
      */
     OptionalLong remoteLogStartOffset(TopicIdPartition partition);
 

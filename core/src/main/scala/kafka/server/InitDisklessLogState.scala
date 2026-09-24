@@ -240,9 +240,9 @@ object AwaitingMetadata {
 
     // Keep stable ordering to align final outcomes with input states.
     val stateSeq = states.toSeq
-    // Retry outcomes computed locally (without a control-plane round-trip), keyed by input index.
+    // Retry outcomes computed locally (without an engine call), keyed by input index.
     val retryOutcomeByIndex = scala.collection.mutable.Map[Int, ParsedResponse]()
-    // Batched control-plane requests for states that are ready to be applied.
+    // Batched engine requests for states that are ready to be applied.
     val requests = new util.ArrayList[LogInitialization]()
 
     // Validate each state and either precompute a retry outcome or queue a batched request.
@@ -269,7 +269,7 @@ object AwaitingMetadata {
       }
     }
 
-    // Issue one Control Plane call for the whole batch (if any requests exist).
+    // Issue one engine call for the whole batch (if any requests exist).
     val responseResult: Either[Throwable, Seq[Errors]] =
       if (requests.isEmpty) Right(Seq.empty)
       else {
@@ -286,18 +286,17 @@ object AwaitingMetadata {
         responseResult match {
           case Left(t) =>
             // If the single batched call fails, retry all.
-            state.warn(s"Control-plane InitDisklessLog for ${state.tp} failed, scheduling retry", t)
+            state.warn(s"Diskless engine log initialization for ${state.tp} failed, scheduling retry", t)
             retriable(state)
           case Right(_) =>
             (if (responseIterator.hasNext) Some(responseIterator.next()) else None) match {
-              // INVALID_REQUEST = partition already initialized (idempotent success)
-              case Some(r) if r == Errors.NONE || r == Errors.INVALID_REQUEST =>
-                ParsedResponse(state.topicId, state.tp.partition(), r, InitDisklessLogBatchQueue.Success)
+              case Some(Errors.NONE) =>
+                ParsedResponse(state.topicId, state.tp.partition(), Errors.NONE, InitDisklessLogBatchQueue.Success)
               case Some(r) =>
                 ParsedResponse(state.topicId, state.tp.partition(), r, InitDisklessLogBatchQueue.RetriableFailure)
               case None =>
                 // Missing response entry is treated as retriable to avoid dropping work.
-                state.warn(s"Control-plane InitDisklessLog response missing for ${state.tp}, scheduling retry")
+                state.warn(s"Diskless engine log initialization response missing for ${state.tp}, scheduling retry")
                 retriable(state)
             }
         }

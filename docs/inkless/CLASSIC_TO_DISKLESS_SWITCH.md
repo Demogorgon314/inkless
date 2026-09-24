@@ -63,7 +63,7 @@ sequenceDiagram
     MetadataLog-->>Leader: Metadata delta with committed seal offset
 
     Leader->>Leader: Reconcile local classic log at seal
-    Leader->>InitManager: initOnControlPlane(from metadata)
+    Leader->>InitManager: initInEngine(from metadata)
     InitManager->>ControlPlane: InitDisklessLog(topic, partition,<br/>classic log start, seal offset, producerStates)
     ControlPlane-->>InitManager: Success or already initialized
     InitManager-->>Leader: Mark done and allow diskless appends

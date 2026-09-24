@@ -30,6 +30,8 @@ public interface Fetcher {
     /**
      * Preserves request iteration order when spending the shared fetch byte budget.
      * Returns a result for every requested partition, including partition-level failures.
+     * A partition's records may exceed its maxBytes because the engine returns whole batches;
+     * Kafka applies its own size limits to the result.
      */
     CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions);

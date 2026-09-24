@@ -24,7 +24,7 @@ import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, Consolidat
 import io.aiven.inkless.consume.{FetchHandler, FetchOffsetHandler}
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetResponse, BatchInfo, BatchMetadata, ControlPlane, ControlPlaneException, FindBatchResponse, RepairDisklessLogRequest, RepairDisklessLogResponse, DeleteRecordsResponse => CpDeleteRecordsResponse, ListOffsetsRequest => CpListOffsetsRequest, ListOffsetsResponse => CpListOffsetsResponse}
 import io.aiven.inkless.produce.AppendHandler
-import io.aiven.inkless.engine.{DisklessMetadataSnapshot, OffsetReader, RecordDeletion}
+import io.aiven.inkless.engine.{DisklessMetadataSnapshot, LogTransition, OffsetReader, RecordDeletion}
 import io.aiven.inkless.engine.builtin.InklessDisklessEngine
 import kafka.server.diskless.DisklessEngines
 import kafka.server.diskless.DisklessEnginesTest.{TestEngine => TestDisklessEngine, TestProvider => TestDisklessProvider, testContext}
@@ -412,6 +412,33 @@ class ReplicaManagerInklessTest {
       assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, replicaManager.repairDisklessLog(disklessTopicPartition.topicPartition()))
     } finally {
       replicaManager.shutdown(checkpointHW = false)
+    }
+  }
+
+  @Test
+  def testRepairDisklessLogPreservesEngineError(): Unit = {
+    val transition = mock(classOf[LogTransition])
+    when(transition.repairLog(disklessTopicPartition, 100L)).thenReturn(Errors.REQUEST_TIMED_OUT)
+    val initializer: MockedConstruction.MockInitializer[TestDisklessEngine] = {
+      case (engine, _) => when(engine.logTransition()).thenReturn(Optional.of(transition))
+    }
+    val pluginConstructor = mockConstruction(classOf[TestDisklessEngine], initializer)
+    try {
+      val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()),
+        engineClassName = Some(classOf[TestDisklessProvider].getName)))
+      try {
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+          .thenReturn(100L)
+        stubLeaderPartition(replicaManager, disklessTopicPartition)
+
+        assertEquals(Errors.REQUEST_TIMED_OUT,
+          replicaManager.repairDisklessLog(disklessTopicPartition.topicPartition()))
+        verify(transition).repairLog(disklessTopicPartition, 100L)
+      } finally {
+        replicaManager.shutdown(checkpointHW = false)
+      }
+    } finally {
+      pluginConstructor.close()
     }
   }
 

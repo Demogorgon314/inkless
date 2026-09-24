@@ -24,6 +24,7 @@ import java.util.List;
 import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.InitDisklessLogProducerState;
 import io.aiven.inkless.control_plane.InitDisklessLogRequest;
+import io.aiven.inkless.control_plane.InitDisklessLogResponse;
 import io.aiven.inkless.control_plane.RepairDisklessLogRequest;
 import io.aiven.inkless.engine.LogTransition;
 
@@ -42,7 +43,11 @@ final class InklessLogTransition implements LogTransition {
                 p.producerId(), p.producerEpoch(), p.baseSequence(), p.lastSequence(),
                 p.assignedOffset(), p.batchMaxTimestamp())).toList())).toList();
         var responses = controlPlane.initDisklessLog(nativeRequests);
-        return responses == null ? List.of() : responses.stream().map(r -> r.error()).toList();
+        return responses == null ? List.of() : responses.stream().map(InklessLogTransition::toTransitionError).toList();
+    }
+
+    private static Errors toTransitionError(InitDisklessLogResponse response) {
+        return response.equals(InitDisklessLogResponse.alreadyInitialized()) ? Errors.NONE : response.error();
     }
 
     @Override

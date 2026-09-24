@@ -31,13 +31,16 @@ import java.util.List;
 public interface FetchProbing {
     record FetchProbe(TopicIdPartition partition, long offset, int maxBytes) { }
 
-    /** hasData distinguishes a known batch range from a local cache miss. */
+    /**
+     * Reports {@code hasData} as true if the engine knows records exist at the offset; false
+     * otherwise. A false hint does not establish that the partition is empty.
+     */
     record FetchAvailability(TopicIdPartition partition, Errors error, boolean hasData,
                              long highWatermark, long estimatedBytes) { }
 
     /**
-     * Returns one hint per request, in request order. Runs inside purgatory completion checks.
-     * A cache miss is not authoritative and cannot replace a fetch.
+     * Returns one hint per request, in request order. Runs inside purgatory completion checks, so it
+     * must answer from state the engine already holds. A hint is not authoritative and cannot replace a fetch.
      */
     List<FetchAvailability> probeFetch(List<FetchProbe> requests);
 }

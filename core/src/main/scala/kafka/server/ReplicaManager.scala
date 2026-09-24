@@ -243,16 +243,14 @@ class ReplicaManager(val config: KafkaConfig,
   // Hosts long-poll DelayedConsolidationFetch operations created by the consolidation fetcher (DisklessLeaderEndPoint).
   // Kept separate from delayedFetchPurgatory because the latter is strictly typed to DelayedFetch.
   // Operations perform one initial metadata probe, then complete via maxWaitMs timeout if parked;
-  // wake-up sites are intentionally not mirrored here to keep control-plane pressure bounded.
+  // wake-up sites are intentionally not mirrored here to keep diskless engine pressure bounded.
   //
   // purgeInterval = 0 (matches delayedRemoteFetchPurgatory) so completed ops release their captured response
   // references immediately for GC.
   // Each completed operation pins a Map[TopicIdPartition, FetchPartitionData] holding fetched records, 
   // bounded per partition by diskless.consolidation.fetch.max.bytes 
   // and in aggregate by diskless.consolidation.fetch.response.max.bytes.
-  // The aggregate bound overshoots by at most one coordinate per find_batches call: find_batches admits a first
-  // coordinate unconditionally only until the request has returned something (upstream's request-level
-  // minOneMessage), then holds every later partition to the budget.
+  // The aggregate bound can overshoot because the engine returns whole batches (see Fetcher#fetch).
   // Without aggressive purging, watch lists accumulate up to ~purgeInterval completed ops worth of records
   // and exhaust the heap.
   val delayedConsolidationFetchPurgatory =
@@ -274,7 +272,7 @@ class ReplicaManager(val config: KafkaConfig,
     delayedRemoteListOffsetsPurgatory
   )
   // --- Diskless Partition Consolidation Fields ---
-  private val inklessConsolidatedDisklessLogPruner: Option[ConsolidatedDisklessLogPruner] =
+  private val consolidatedDisklessLogPruner: Option[ConsolidatedDisklessLogPruner] =
     if (config.disklessRemoteStorageConsolidationEnabled)
       logTiering.map(tiering => new ConsolidatedDisklessLogPruner(this, _disklessTopicView, tiering))
     else
@@ -371,7 +369,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   /**
    * Counts consolidating partitions whose local high watermark sits below their local log end
-   * offset, so a consumer read of that range goes to Inkless.
+   * offset, so a consumer read of that range goes to the diskless engine.
    * Unlike ConsolidationHighWatermarkLagFetchRate this does not depend on consumer traffic,
    * so a stalled replica stays visible after consumers have moved past its log end offset.
    */
@@ -477,9 +475,9 @@ class ReplicaManager(val config: KafkaConfig,
     remoteLogManager.foreach(rlm => rlm.setDelayedOperationPurgatory(delayedRemoteListOffsetsPurgatory))
 
     disklessEngine.foreach(_.start())
-    for (pruner <- inklessConsolidatedDisklessLogPruner; tiering <- logTiering) {
+    for (pruner <- consolidatedDisklessLogPruner; tiering <- logTiering) {
       val intervalMs = tiering.reclaimIntervalMs()
-      scheduler.schedule("inkless-consolidated-diskless-log-pruner", () => pruner.run(), intervalMs, intervalMs)
+      scheduler.schedule("consolidated-diskless-log-pruner", () => pruner.run(), intervalMs, intervalMs)
     }
   }
 
@@ -873,7 +871,7 @@ class ReplicaManager(val config: KafkaConfig,
           error("Diskless append future failed", e)
           readyDisklessEntries.map{ case (tp, _) => tp -> new PartitionResponse(Errors.UNKNOWN_SERVER_ERROR)}
         }
-        // Diskless append results do not complete purgatory actions to avoid overloading the control-plane.
+        // Diskless append results do not complete purgatory actions to avoid overloading the diskless engine.
         // only classic append results complete purgatory actions.
         responseCallback((disklessResult ++ pendingDisklessSwitchResult ++ classicResult.asScala).asJava)
       }
@@ -1541,7 +1539,7 @@ class ReplicaManager(val config: KafkaConfig,
     val plan = diskless.split(offsetPerPartition)
 
     // Report the cross-tier earliest of successfully-deleted consolidating diskless partitions to the
-    // control plane and use it as their low watermark, so any broker (leader or the follower the
+    // diskless engine and use it as their low watermark, so any broker (leader or the follower the
     // metadata transformer routes clients to) returns the same value as ListOffsets(EARLIEST).
     def finalizeCrossTierAndRespond(response: Map[TopicPartition, DeleteRecordsPartitionResult]): Unit = {
       val advanced = diskless.advanceCrossTierEarliest(response, offsetPerPartition)
@@ -1577,7 +1575,7 @@ class ReplicaManager(val config: KafkaConfig,
     // Consolidating diskless partitions (born-consolidating or switched-with-remote-storage) do not
     // replicate their local consolidated log to followers, so their DeleteRecords completion must NOT
     // wait on the ISR low watermark (Partition.lowWatermarkIfLeader), which is pinned at the followers'
-    // frozen, pre-switch logStartOffset. Their earliest is instead reported from the control plane in
+    // frozen, pre-switch logStartOffset. Their earliest is instead reported from the diskless engine in
     // finalizeCrossTierAndRespond; only classic partitions keep the ISR-gated delayed operation. The
     // local leg above still ran to drive the leader's RemoteLogManager physical deletion of remote
     // segments.
@@ -1646,6 +1644,14 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   /**
+   * Persists the leader's remote log start so any broker can serve ListOffsets(EARLIEST) for a
+   * consolidating diskless partition. The engine ignores partitions that are not consolidating.
+   */
+  def reportDisklessRemoteLogStartOffset(topicPartition: TopicPartition, remoteLogStartOffset: Long): Unit =
+    for (tiering <- logTiering; partition <- disklessTopicIdPartition(topicPartition))
+      tiering.reportRemoteLogStartOffset(partition, remoteLogStartOffset)
+
+  /**
    * Whether `topicPartition` is a consolidating diskless topic on this broker (covers both switched
    * partitions, which carry a seal, and born-diskless partitions, which do not). Used by the
    * [[org.apache.kafka.server.log.remote.storage.RemoteLogManager]] to pick its reclaim-floor fallback
@@ -1653,54 +1659,23 @@ class ReplicaManager(val config: KafkaConfig,
    * broker-local log start, which on a rebuilt leader can sit above the true cross-tier earliest (at the
    * seal for a switched partition). Mirrors the guard in [[crossTierRemoteLogStartOffset]] so the two agree.
    */
-  /**
-   * Persists the leader's remote log start so any broker can serve ListOffsets(EARLIEST) for a
-   * consolidating diskless partition. The engine ignores partitions that are not consolidating.
-   */
-  def reportDisklessRemoteLogStartOffset(topicPartition: TopicPartition, remoteLogStartOffset: Long): Unit =
-    logTiering.foreach { tiering =>
-      val topicId = _disklessTopicView.getTopicId(topicPartition.topic)
-      if (topicId != null && topicId != Uuid.ZERO_UUID)
-        tiering.reportRemoteLogStartOffset(new TopicIdPartition(topicId, topicPartition), remoteLogStartOffset)
-    }
-
   def isConsolidatingDisklessPartition(topicPartition: TopicPartition): Boolean =
     logTiering.isDefined && _disklessTopicView.isConsolidatingDisklessTopic(topicPartition.topic)
 
   /**
-   * The raw cross-tier remote log start (`logs.remote_log_start_offset`) for a consolidating diskless
-   * partition, present only when the partition's classic leader has actually reported it; empty when it
-   * is unset (NULL), for non-consolidating/non-inkless partitions, or when unresolved.
+   * The remote log start that the partition's local-log leader reported through
+   * [[reportDisklessRemoteLogStartOffset]], for a consolidating diskless partition; empty when no leader
+   * has reported it, for non-consolidating partitions, or when unresolved.
    *
    * This is the reclaim floor and become-leader report source for the
    * [[org.apache.kafka.server.log.remote.storage.RemoteLogManager]]. Unlike [[crossTierEarliestOffset]]
-   * it deliberately does NOT fall back to `log_start_offset` (the WAL prune frontier): that frontier can
-   * run ahead of the true remote start, so using it as the reclaim floor would delete still-live remote
-   * segments, and reporting it back would lock the wrong value in via the forward-only control-plane
-   * advance. Returning empty here makes the RLM fail safe to the true remote earliest instead.
-   *
-   * Reads the dedicated control-plane accessor rather than the write-through
-   * the engine cross-tier start cache, since that cache is also populated by
-   * ListOffsets(EARLIEST) read-throughs and can therefore hold a COALESCE'd frontier value.
+   * it never falls back to the start of the engine-resident records: that start can run ahead of the
+   * true remote start, so using it as the reclaim floor would delete still-live remote segments, and
+   * reporting it back would lock the wrong value in, because the engine only moves it forward.
+   * Returning empty here makes the RLM fail safe to the true remote earliest instead.
    */
-  def crossTierRemoteLogStartOffset(topicPartition: TopicPartition): OptionalLong = {
-    val storage = logTiering.orNull
-    if (storage == null || !_disklessTopicView.isConsolidatingDisklessTopic(topicPartition.topic)) {
-      return OptionalLong.empty()
-    }
-    val topicId = _disklessTopicView.getTopicId(topicPartition.topic)
-    if (topicId == null || topicId.equals(Uuid.ZERO_UUID)) {
-      return OptionalLong.empty()
-    }
-    val tidp = new TopicIdPartition(topicId, topicPartition.partition, topicPartition.topic)
-    try {
-      storage.remoteLogStartOffset(tidp)
-    } catch {
-      case e: Exception =>
-        warn(s"Failed to resolve cross-tier remote log start for $topicPartition from the control plane", e)
-        OptionalLong.empty()
-    }
-  }
+  def crossTierRemoteLogStartOffset(topicPartition: TopicPartition): OptionalLong =
+    queryConsolidatingPartition(topicPartition, "cross-tier remote log start")(_.remoteLogStartOffset(_))
 
   /**
    * Returns whether RLMM has a readable remote segment covering `offset`.
@@ -1736,35 +1711,36 @@ class ReplicaManager(val config: KafkaConfig,
 
   /**
    * The authoritative, broker-agnostic cross-tier earliest offset for a consolidating diskless
-   * partition, as tracked by the control plane (`COALESCE(remote_log_start_offset, log_start_offset)`,
-   * what `ListOffsets(EARLIEST)` returns); empty for non-consolidating/non-inkless partitions or when
-   * unresolved. Preferred over the broker-local `UnifiedLog.logStartOffset`, which only moves forward
-   * (monotonic) and can sit above the true cross-tier earliest once the earlier data lives only in the
-   * remote tier: on a rebuilt switched leader it is pinned at the seal (`classicToDisklessStartOffset`),
-   * so using it would over-reclaim and reject reads of the surviving prefix `[earliest, seal)`. A
-   * born-diskless partition has no seal; there the equivalent hazard is the control-plane earliest
-   * itself degrading to the WAL prune frontier when `remote_log_start_offset` is NULL, which the raw
-   * [[crossTierRemoteLogStartOffset]] guards for the irreversible reclaim path. Reads the write-through
-   * the engine cross-tier start cache first, else queries the control plane and caches
-   * the hit; a stale entry can only be too low (safe: under-reclaims/over-serves).
+   * partition, as the engine tracks it (what `ListOffsets(EARLIEST)` returns); empty for
+   * non-consolidating partitions or when unresolved. Preferred over the broker-local
+   * `UnifiedLog.logStartOffset`, which only moves forward (monotonic) and can sit above the true
+   * cross-tier earliest once the earlier data lives only in the remote tier: on a rebuilt switched
+   * leader it is pinned at the seal (`classicToDisklessStartOffset`), so using it would over-reclaim and
+   * reject reads of the surviving prefix `[earliest, seal)`. A born-diskless partition has no seal; there
+   * the equivalent hazard is the engine earliest itself degrading to the start of the engine-resident
+   * records while no remote start is reported, which the raw [[crossTierRemoteLogStartOffset]] guards
+   * for the irreversible reclaim path. The engine only advances this offset, so a stale value can only
+   * be too low (safe: under-reclaims/over-serves).
    */
-  def crossTierEarliestOffset(topicPartition: TopicPartition): OptionalLong = {
-    val storage = logTiering.orNull
-    if (storage == null || !_disklessTopicView.isConsolidatingDisklessTopic(topicPartition.topic)) {
-      return OptionalLong.empty()
-    }
-    val topicId = _disklessTopicView.getTopicId(topicPartition.topic)
-    if (topicId == null || topicId.equals(Uuid.ZERO_UUID)) {
-      return OptionalLong.empty()
-    }
-    val tidp = new TopicIdPartition(topicId, topicPartition.partition, topicPartition.topic)
-    try {
-      storage.earliestOffset(tidp)
-    } catch {
-      case e: Exception =>
-        warn(s"Failed to resolve cross-tier earliest offset for $topicPartition from the control plane", e)
-        OptionalLong.empty()
-    }
+  def crossTierEarliestOffset(topicPartition: TopicPartition): OptionalLong =
+    queryConsolidatingPartition(topicPartition, "cross-tier earliest offset")(_.earliestOffset(_))
+
+  private def disklessTopicIdPartition(topicPartition: TopicPartition): Option[TopicIdPartition] =
+    Option(_disklessTopicView.getTopicId(topicPartition.topic))
+      .filterNot(_ == Uuid.ZERO_UUID)
+      .map(topicId => new TopicIdPartition(topicId, topicPartition.partition, topicPartition.topic))
+
+  private def queryConsolidatingPartition(topicPartition: TopicPartition, offsetName: String)
+                                         (query: (LogTiering, TopicIdPartition) => OptionalLong): OptionalLong = {
+    if (!isConsolidatingDisklessPartition(topicPartition)) return OptionalLong.empty()
+    (for (tiering <- logTiering; partition <- disklessTopicIdPartition(topicPartition)) yield {
+      try query(tiering, partition)
+      catch {
+        case e: Exception =>
+          warn(s"Failed to resolve $offsetName for $topicPartition from the diskless engine", e)
+          OptionalLong.empty()
+      }
+    }).getOrElse(OptionalLong.empty())
   }
 
   // If all the following conditions are true, we need to put a delayed produce request and wait for replication to complete
@@ -2295,7 +2271,7 @@ class ReplicaManager(val config: KafkaConfig,
       }
       // If there are diskless fetches, enforce a lower bound on maxWaitMs to ensure that we wait at least as long as the
       // configured remote fetch max wait time. This is to ensure that we give enough time for the diskless fetches to complete,
-      // and do not overload the control plane with too many requests.
+      // and do not overload the diskless engine with too many requests.
       val delayedFetch = new DelayedFetch(
         params = params,
         classicFetchPartitionStatus = classicFetchPartitionStatus,
@@ -3140,7 +3116,7 @@ class ReplicaManager(val config: KafkaConfig,
                 .map[Errors](e => Errors.forException(e))
                 .orElse(Errors.NONE)
               if (error != Errors.NONE) {
-                warn(s"Error fetching offset for leader epoch from control plane for $topicPartition: $error",
+                warn(s"Error fetching offset for leader epoch from the diskless engine for $topicPartition: $error",
                   epochEndOffset.exception().orElse(null))
               }
               val endOffset = epochEndOffset.timestampAndOffset()
@@ -3351,7 +3327,7 @@ class ReplicaManager(val config: KafkaConfig,
       }
     }
 
-    initDisklessLogOnControlPlane(delta, localChanges.leaders.asScala)
+    initDisklessLogInEngine(delta, localChanges.leaders.asScala)
   }
 
   /** Notifies the diskless engine after Kafka applies a dynamic change to broker log defaults. */
@@ -3553,7 +3529,7 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
-  private def initDisklessLogOnControlPlane(
+  private def initDisklessLogInEngine(
     delta: TopicsDelta,
     localLeaders: mutable.Map[TopicPartition, LocalReplicaChanges.PartitionInfo]
   ): Unit = {
@@ -3570,12 +3546,12 @@ class ReplicaManager(val config: KafkaConfig,
 
           val becameLocalLeader = previousPartition.forall(_.leader != config.nodeId) &&
             partitionRegistration.leader == config.nodeId
-          // Init Diskless Log on Control Plane if this broker is leader and either:
+          // Initialize the engine log if this broker is leader and either:
           // - classicToDisklessStartOffset was just committed to the metadata log (offset transition)
           // - this broker just became leader (failover with already-committed offset)
-          val shouldInitOnControlPlane = disklessStartOffsetJustCommitted || becameLocalLeader
+          val shouldInitInEngine = disklessStartOffsetJustCommitted || becameLocalLeader
 
-          if (shouldInitOnControlPlane) {
+          if (shouldInitInEngine) {
             onlinePartition(tp) match {
               case Some(partition) if partition.isLeader =>
                 val producerStates = partitionRegistration.disklessProducerStates.asScala.map { producerState =>
@@ -3588,7 +3564,7 @@ class ReplicaManager(val config: KafkaConfig,
                     producerState.batchMaxTimestamp()
                   )
                 }.asJava
-                manager.initOnControlPlane(
+                manager.initInEngine(
                   partition = partition,
                   topicId = info.topicId,
                   topicName = tp.topic,
@@ -3597,11 +3573,11 @@ class ReplicaManager(val config: KafkaConfig,
                 )
               case Some(_) =>
                 stateChangeLogger.info(
-                  s"Skipping diskless init on control plane for $tp because the partition is not a local leader."
+                  s"Skipping diskless engine log initialization for $tp because the partition is not a local leader."
                 )
               case None =>
                 stateChangeLogger.info(
-                  s"Skipping diskless init on control plane for $tp because the partition is not online locally."
+                  s"Skipping diskless engine log initialization for $tp because the partition is not online locally."
                 )
             }
           }
@@ -3629,15 +3605,14 @@ class ReplicaManager(val config: KafkaConfig,
         try {
           val result = storage.repairLog(new TopicIdPartition(topicId, topicPartition), seal)
           if (result == Errors.NONE) {
-            stateChangeLogger.info(s"Repaired control-plane diskless log for $topicPartition at seal offset $seal.")
-            Errors.NONE
+            stateChangeLogger.info(s"Repaired diskless engine log for $topicPartition at seal offset $seal.")
           } else {
-            stateChangeLogger.info(s"Rejecting repair for $topicPartition: no control-plane diskless log entry to repair.")
-            Errors.UNKNOWN_TOPIC_OR_PARTITION
+            stateChangeLogger.info(s"Diskless engine rejected repair for $topicPartition at seal offset $seal: $result.")
           }
+          result
         } catch {
           case e: Throwable =>
-            stateChangeLogger.error(s"Failed to repair control-plane diskless log for $topicPartition at seal offset $seal.", e)
+            stateChangeLogger.error(s"Failed to repair diskless engine log for $topicPartition at seal offset $seal.", e)
             Errors.UNKNOWN_SERVER_ERROR
         }
       case Some(_) =>

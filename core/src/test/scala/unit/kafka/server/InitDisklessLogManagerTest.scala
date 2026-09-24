@@ -1272,7 +1272,7 @@ class InitDisklessLogManagerTest {
     val partition = mockPartition(hw = 100, leo = 100)
     when(controlPlane.initializeLogs(any())).thenReturn(util.List.of(Errors.NONE))
 
-    manager.initOnControlPlane(
+    manager.initInEngine(
       partition = partition,
       topicId = topicId,
       topicName = tp0.topic(),
@@ -1287,11 +1287,13 @@ class InitDisklessLogManagerTest {
   }
 
   @Test
-  def testMetadataAppliedAlreadyInitializedIsTerminalSuccess(): Unit = {
+  def testMetadataAppliedEngineErrorIsNotTreatedAsInitialized(): Unit = {
     val partition = mockPartition(hw = 100, leo = 100)
-    when(controlPlane.initializeLogs(any())).thenReturn(util.List.of(Errors.INVALID_REQUEST))
+    when(controlPlane.initializeLogs(any()))
+      .thenReturn(util.List.of(Errors.INVALID_REQUEST))
+      .thenReturn(util.List.of(Errors.NONE))
 
-    manager.initOnControlPlane(
+    manager.initInEngine(
       partition = partition,
       topicId = topicId,
       topicName = tp0.topic(),
@@ -1300,8 +1302,10 @@ class InitDisklessLogManagerTest {
     )
 
     fireLinger()
+    assertState[AwaitingMetadata](tp0)
 
-    verify(controlPlane).initializeLogs(any())
+    fireRetry()
+    verify(controlPlane, times(2)).initializeLogs(any())
     assertTrue(manager.getTrackedPartitions.isEmpty)
   }
 
@@ -1312,7 +1316,7 @@ class InitDisklessLogManagerTest {
       .thenReturn(util.List.of(Errors.NOT_CONTROLLER))
       .thenReturn(util.List.of(Errors.NONE))
 
-    manager.initOnControlPlane(
+    manager.initInEngine(
       partition = partition,
       topicId = topicId,
       topicName = tp0.topic(),
@@ -1334,14 +1338,14 @@ class InitDisklessLogManagerTest {
     val partition = mockPartition(hw = 100, leo = 100)
     when(controlPlane.initializeLogs(any())).thenReturn(util.List.of(Errors.NONE))
 
-    manager.initOnControlPlane(
+    manager.initInEngine(
       partition = partition,
       topicId = topicId,
       topicName = tp0.topic(),
       classicToDisklessStartOffset = 100L,
       producerStates = util.List.of()
     )
-    manager.initOnControlPlane(
+    manager.initInEngine(
       partition = partition,
       topicId = topicId,
       topicName = tp0.topic(),

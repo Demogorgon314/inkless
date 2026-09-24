@@ -86,9 +86,9 @@ class InitDisklessLogManager(
   /**
    * Handles already-applied diskless init metadata for a partition.
    * This keeps/moves the partition to AwaitingMetadata and triggers a prompt
-   * control-plane init send, since metadata is committed and visible.
+   * engine log initialization, since metadata is committed and visible.
    */
-  def initOnControlPlane(
+  def initInEngine(
     partition: Partition,
     topicId: Uuid,
     topicName: String,
@@ -96,7 +96,7 @@ class InitDisklessLogManager(
     producerStates: java.util.List[ProducerState]
   ): Unit = {
     if (classicToDisklessStartOffset < 0) {
-      warn(s"Received negative classicToDisklessStartOffset ($classicToDisklessStartOffset) for $topicName:${partition.topicPartition}, skipping control-plane init")
+      warn(s"Received negative classicToDisklessStartOffset ($classicToDisklessStartOffset) for $topicName:${partition.topicPartition}, skipping engine log initialization")
       return
     }
 
