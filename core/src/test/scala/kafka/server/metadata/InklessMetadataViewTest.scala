@@ -26,10 +26,15 @@ import org.junit.jupiter.api.{BeforeEach, Nested, Test}
 import org.junit.jupiter.api.Assertions._
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito._
+import io.aiven.inkless.control_plane.ControlPlane
+import io.aiven.inkless.engine.DisklessEngine
+import io.aiven.inkless.engine.DisklessMetadataSnapshot.TopicMetadata
+import io.aiven.inkless.engine.builtin.InklessDisklessEngineTest
 
 import java.util.function.Supplier
 import java.util
 import java.util.{Collections, Optional, Properties}
+import scala.jdk.CollectionConverters._
 
 class InklessMetadataViewTest {
   private var metadataCache: KRaftMetadataCache = _
@@ -545,4 +550,82 @@ class InklessMetadataViewTest {
     }
   }
 
+  /**
+   * Drives the built-in engine's metadata callbacks against a real view, so the assertions are on the
+   * config that the diskless produce and retention paths read. Kafka reaches these callbacks from
+   * ReplicaManager.updateDisklessTopicConfigs for every committed diskless topic change.
+   */
+  @Nested
+  class EngineCallbackTest {
+    private def engineWithView(topic: String, published: Properties,
+                               defaults: util.Map[String, Object]): (DisklessEngine, InklessMetadataView) = {
+      val cache = mock(classOf[KRaftMetadataCache])
+      when(cache.topicConfig(topic)).thenReturn(published)
+      val view = new InklessMetadataView(cache, () => defaults)
+      (InklessDisklessEngineTest.nativeEngine(mock(classOf[ControlPlane]), view), view)
+    }
+
+    private def committed(topic: String, overrides: (String, String)*): TopicMetadata = {
+      val configs = (Map(TopicConfig.DISKLESS_ENABLE_CONFIG -> "true") ++ overrides).asJava
+      new TopicMetadata(Uuid.randomUuid(), topic, 1, configs, 1L)
+    }
+
+    private def properties(topic: TopicMetadata): Properties = {
+      val props = new Properties()
+      props.putAll(topic.configs())
+      props
+    }
+
+    @Test
+    def testRaisedMaxMessageBytesReachesDisklessAppendPath(): Unit = {
+      val topic = "diskless-topic"
+      val initial = committed(topic, TopicConfig.MAX_MESSAGE_BYTES_CONFIG -> "1048588")
+      val (engine, view) = engineWithView(topic, properties(initial),
+        Collections.singletonMap(TopicConfig.MAX_MESSAGE_BYTES_CONFIG, "1048588"))
+
+      // Seeds the cached LogConfig at the initial limit; with no entry there is nothing to go stale.
+      assertEquals(1048588, view.getTopicConfig(topic).maxMessageSize)
+
+      engine.onTopicConfigChanged(committed(topic, TopicConfig.MAX_MESSAGE_BYTES_CONFIG -> "6291456"))
+
+      assertEquals(6291456, view.getTopicConfig(topic).maxMessageSize,
+        "A raised max.message.bytes must reach the diskless append path, otherwise produces are " +
+          "rejected with MESSAGE_TOO_LARGE against the old limit")
+    }
+
+    @Test
+    def testRetentionChangeReachesDisklessRetentionEnforcement(): Unit = {
+      val topic = "consolidating-diskless-topic"
+      val initial = committed(topic, TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG -> "true",
+        TopicConfig.RETENTION_MS_CONFIG -> "604800000", TopicConfig.RETENTION_BYTES_CONFIG -> "-1",
+        TopicConfig.CLEANUP_POLICY_CONFIG -> TopicConfig.CLEANUP_POLICY_DELETE)
+      val (engine, view) = engineWithView(topic, properties(initial), Collections.emptyMap[String, Object]())
+      assertEquals(604800000L, view.getTopicConfig(topic).retentionMs)
+
+      engine.onTopicConfigChanged(committed(topic, TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG -> "true",
+        TopicConfig.RETENTION_MS_CONFIG -> "3600000", TopicConfig.RETENTION_BYTES_CONFIG -> "1048576",
+        TopicConfig.CLEANUP_POLICY_CONFIG -> TopicConfig.CLEANUP_POLICY_DELETE))
+
+      // RetentionEnforcer re-reads these three per cycle through getTopicConfig, so a stale entry keeps
+      // enforcing the old retention indefinitely (silently, and it governs deletion).
+      val updated = view.getTopicConfig(topic)
+      assertEquals(3600000L, updated.retentionMs, "Shortened retention.ms must reach diskless retention enforcement")
+      assertEquals(1048576L, updated.retentionSize, "Changed retention.bytes must reach diskless retention enforcement")
+      assertTrue(updated.delete, "cleanup.policy must still be read from the refreshed entry")
+    }
+
+    @Test
+    def testChangeForUnreadTopicKeepsLazyPopulation(): Unit = {
+      val topic = "unread-topic"
+      val published = new Properties()
+      published.put(TopicConfig.RETENTION_MS_CONFIG, "7200000")
+      val (engine, view) = engineWithView(topic, published, Collections.emptyMap[String, Object]())
+
+      engine.onTopicConfigChanged(committed(topic, TopicConfig.RETENTION_MS_CONFIG -> "3600000"))
+
+      // A topic that no diskless path has read must still resolve from the metadata cache on first access.
+      assertEquals(7200000L, view.getTopicConfig(topic).retentionMs)
+      verify(view.metadataCache, times(1)).topicConfig(topic)
+    }
+  }
 }

@@ -232,6 +232,7 @@ public class KafkaApisBuilder {
                              clientMetricsManager,
                              groupConfigManager,
                              OptionConverters.toScala(Optional.empty()),
+                             OptionConverters.toScala(Optional.empty()),
                              OptionConverters.toScala(Optional.empty()));
     }
 }

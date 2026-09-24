@@ -16,7 +16,11 @@
  */
 package io.aiven.inkless.engine;
 
-/** Immutable request origin. Broker identity belongs to the engine's construction context. */
+/**
+ * Immutable request origin. Engines derive any client zone from it, and must apply the same rule in
+ * placement and append so that writes arrive where placement routed them. Either field may be null
+ * when the request does not carry it. Broker identity belongs to the engine's construction context.
+ */
 public record DisklessRequestContext(String clientId, String listenerName) {
     public static DisklessRequestContext internal() {
         return new DisklessRequestContext("", "");

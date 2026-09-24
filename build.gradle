@@ -2629,6 +2629,11 @@ project(':storage:ursa') {
       exclude group: 'org.apache.logging.log4j', module: 'log4j-slf4j2-impl'
     }
     runtimeOnly 'io.github.oxia-db:oxia-client'
+
+    testImplementation project(':clients')
+    testImplementation project(':storage:diskless-api')
+    testImplementation libs.junitJupiter
+    testRuntimeOnly runtimeTestLibs
   }
 
   // This provider is assembled separately. It is never added to core's runtimeClasspath.

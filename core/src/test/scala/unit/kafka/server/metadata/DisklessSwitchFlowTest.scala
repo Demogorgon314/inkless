@@ -76,7 +76,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       val createDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -95,7 +95,7 @@ class DisklessSwitchFlowTest {
       // The controller writes the config flip and the per-partition switch-pending marker
       // in the same atomic op (see markClassicToDisklessSwitchStarted).
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val enableDisklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(enableDisklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -152,7 +152,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       // Initially: no partitions sealed, no entries tracked, every gauge is 0
@@ -174,7 +174,7 @@ class DisklessSwitchFlowTest {
       // With a fresh mock log (HW == LEO == 0), the state machine immediately
       // transitions out of WaitingForReplication and parks in SendingToController.
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val disklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(disklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -246,7 +246,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(false)
 
     try {
       // And Given the classic topic partition exists as local leader.
@@ -267,7 +267,7 @@ class DisklessSwitchFlowTest {
 
       // When diskless is enabled for the existing topic.
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val disklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(disklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -299,7 +299,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(false)
 
     try {
       // And Given the classic partition exists as local leader.
@@ -359,7 +359,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
 
     try {
       // When the topic is created and diskless is enabled in the same metadata delta.
@@ -401,7 +401,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       // And Given the partition exists locally but leader is another broker.
@@ -418,7 +418,7 @@ class DisklessSwitchFlowTest {
 
       // When diskless is enabled and leadership moves to this broker.
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val toLeaderDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(toLeaderDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))),
@@ -458,7 +458,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       // And Given the partition exists on this broker as follower.
@@ -479,7 +479,7 @@ class DisklessSwitchFlowTest {
 
       // When diskless is enabled and leadership moves to this broker in the same image.
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val switchDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(switchDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))),
@@ -516,8 +516,8 @@ class DisklessSwitchFlowTest {
     val tp1 = new TopicPartition(topicName, 1)
     val tp2 = new TopicPartition(topicName, 2)
 
-    when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
-    when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       // And Given partition leadership is split: one partition on broker0, two partitions on broker1.
@@ -542,8 +542,8 @@ class DisklessSwitchFlowTest {
       // When diskless is enabled for that existing topic.
       broker0Ctx.metadataPublisher._firstPublish = false
       broker1Ctx.metadataPublisher._firstPublish = false
-      when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
-      when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val switchDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(switchDelta, topicName, topicId,
         partitions = Seq(
@@ -589,8 +589,8 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
-    when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       // And Given both brokers apply classic-topic metadata.
@@ -609,8 +609,8 @@ class DisklessSwitchFlowTest {
       // When diskless is enabled and leadership moves from broker0 to broker1 in the same image.
       broker0Ctx.metadataPublisher._firstPublish = false
       broker1Ctx.metadataPublisher._firstPublish = false
-      when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
-      when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val switchDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(switchDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))),
@@ -648,7 +648,7 @@ class DisklessSwitchFlowTest {
     val topicId = Uuid.randomUuid()
     val tp = new TopicPartition(topicName, 0)
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       val createDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -661,7 +661,7 @@ class DisklessSwitchFlowTest {
       ctx.replicaManager.applyDelta(createDelta, createImage)
 
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val disklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(disklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -711,8 +711,8 @@ class DisklessSwitchFlowTest {
     val topicName = "integration-follower-can-init-control-plane"
     val topicId = Uuid.randomUuid()
 
-    when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
-    when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       val createDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -726,8 +726,8 @@ class DisklessSwitchFlowTest {
 
       broker0Ctx.metadataPublisher._firstPublish = false
       broker1Ctx.metadataPublisher._firstPublish = false
-      when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
-      when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val disklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(disklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -780,8 +780,8 @@ class DisklessSwitchFlowTest {
     val topicName = "integration-failover-redrives-control-plane-init"
     val topicId = Uuid.randomUuid()
 
-    when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
-    when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
+    when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       val createDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -795,8 +795,8 @@ class DisklessSwitchFlowTest {
 
       broker0Ctx.metadataPublisher._firstPublish = false
       broker1Ctx.metadataPublisher._firstPublish = false
-      when(broker0Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
-      when(broker1Ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker0Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
+      when(broker1Ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val disklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(disklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -861,7 +861,7 @@ class DisklessSwitchFlowTest {
     val topicName = "integration-committed-metadata-same-leader-change"
     val topicId = Uuid.randomUuid()
 
-    when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(anyString())).thenReturn(false)
+    when(ctx.replicaManager.disklessTopicView().isDisklessTopic(anyString())).thenReturn(false)
 
     try {
       val createDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -874,7 +874,7 @@ class DisklessSwitchFlowTest {
       ctx.replicaManager.applyDelta(createDelta, createImage)
 
       ctx.metadataPublisher._firstPublish = false
-      when(ctx.replicaManager.inklessMetadataView().isDisklessTopic(topicName)).thenReturn(true)
+      when(ctx.replicaManager.disklessTopicView().isDisklessTopic(topicName)).thenReturn(true)
       val disklessDelta = new MetadataDelta(createImage)
       replayClassicToDisklessSwitchStarted(disklessDelta, topicName, topicId,
         partitions = Seq((0, util.Arrays.asList(0, 1))))
@@ -963,7 +963,7 @@ class DisklessSwitchFlowTest {
       metadataCache = metadataCache,
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
       alterPartitionManager = mock(classOf[kafka.server.AlterPartitionManager]),
-      inklessMetadataView = Some(mock(classOf[InklessMetadataView])),
+      disklessTopicView = Some(mock(classOf[InklessMetadataView])),
       initDisklessLogManager = Some(initDisklessLogManager)
     )
     val faultHandler = mock(classOf[FaultHandler])

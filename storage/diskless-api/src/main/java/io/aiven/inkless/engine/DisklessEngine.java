@@ -46,6 +46,12 @@ import java.util.Optional;
  */
 public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeable {
     /**
+     * Returns the broker routing that Kafka advertises for diskless partitions. Append must accept
+     * the writes this placement routes to the local broker, and may reject writes it routes elsewhere.
+     */
+    PartitionPlacement placement();
+
+    /**
      * Starts engine-owned maintenance on the context scheduler. Kafka calls it once, after the
      * broker finishes constructing its request path and before it serves diskless requests.
      */
@@ -64,6 +70,13 @@ public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeab
      * Runs on the metadata publisher thread under the same constraints as onTopicDeleted.
      */
     default void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
+    }
+
+    /**
+     * Applies a dynamic change to the broker log defaults; the context's brokerLogDefaults supplier
+     * already returns the new values. Runs under the same constraints as onTopicDeleted.
+     */
+    default void onBrokerLogDefaultsChanged() {
     }
 
     /** Returns non-authoritative readiness hints that let Kafka park fetches in its purgatory. */

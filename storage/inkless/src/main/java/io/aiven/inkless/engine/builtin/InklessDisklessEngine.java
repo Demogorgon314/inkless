@@ -18,6 +18,7 @@ package io.aiven.inkless.engine.builtin;
 
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult;
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition;
 import org.apache.kafka.common.protocol.Errors;
@@ -37,6 +38,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
@@ -50,11 +52,14 @@ import io.aiven.inkless.delete.FileCleaner;
 import io.aiven.inkless.delete.RetentionEnforcer;
 import io.aiven.inkless.delete.TopicPurger;
 import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessMetadataSnapshot;
 import io.aiven.inkless.engine.DisklessRequestContext;
 import io.aiven.inkless.engine.FetchProbing;
 import io.aiven.inkless.engine.LogTiering;
 import io.aiven.inkless.engine.LogTransition;
+import io.aiven.inkless.engine.PartitionPlacement;
 import io.aiven.inkless.engine.RecordDeletion;
+import io.aiven.inkless.metadata.InklessPartitionPlacement;
 import io.aiven.inkless.produce.AppendHandler;
 
 /** Adapts the existing handlers without changing their storage or scheduling behavior. */
@@ -62,6 +67,7 @@ public final class InklessDisklessEngine implements DisklessEngine, FetchProbing
     private AppendHandler appendHandler;
     private FetchHandler fetchHandler;
     private FetchOffsetHandler offsetHandler;
+    private InklessPartitionPlacement placement;
 
     private SharedState sharedState;
     private Scheduler scheduler;
@@ -88,6 +94,7 @@ public final class InklessDisklessEngine implements DisklessEngine, FetchProbing
             this.appendHandler = new AppendHandler(sharedState);
             this.fetchHandler = new FetchHandler(sharedState);
             this.offsetHandler = new FetchOffsetHandler(sharedState);
+            this.placement = new InklessPartitionPlacement(sharedState.config().clientAzListenerMap());
             this.logTiering = new InklessLogTiering(sharedState, consolidation);
             this.logTransition = new InklessLogTransition(sharedState.controlPlane());
             this.deleteRecords = new DeleteRecordsInterceptor(sharedState);
@@ -108,6 +115,7 @@ public final class InklessDisklessEngine implements DisklessEngine, FetchProbing
         this.appendHandler = appendHandler;
         this.fetchHandler = fetchHandler;
         this.offsetHandler = offsetHandler;
+        this.placement = new InklessPartitionPlacement(Map.of());
     }
 
     @Override
@@ -126,6 +134,28 @@ public final class InklessDisklessEngine implements DisklessEngine, FetchProbing
 
     private void schedule(String name, Runnable task, long intervalMs) {
         tasks.add(scheduler.schedule(name, task, intervalMs, intervalMs));
+    }
+
+    @Override
+    public void onTopicDeleted(String name, Uuid topicId) {
+        sharedState.metadata().removeTopicConfig(name);
+    }
+
+    @Override
+    public void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
+        var overrides = new Properties();
+        overrides.putAll(topic.configs());
+        sharedState.metadata().updateTopicConfig(topic.name(), overrides);
+    }
+
+    @Override
+    public void onBrokerLogDefaultsChanged() {
+        sharedState.metadata().reconfigureDefaultLogConfig();
+    }
+
+    @Override
+    public PartitionPlacement placement() {
+        return placement;
     }
 
     @Override
@@ -263,7 +293,7 @@ public final class InklessDisklessEngine implements DisklessEngine, FetchProbing
     }
 
     private void closeComponents() throws IOException {
-        Utils.closeAll(appendHandler, fetchHandler, offsetHandler, logTiering,
+        Utils.closeAll(appendHandler, fetchHandler, offsetHandler, placement, logTiering,
             retention, cleaner, purger, deleteRecords);
     }
 }

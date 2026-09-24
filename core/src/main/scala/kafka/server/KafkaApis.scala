@@ -18,12 +18,11 @@
 package kafka.server
 
 import io.aiven.inkless.engine.DisklessRequestContext
-import io.aiven.inkless.control_plane.MetadataView
-import io.aiven.inkless.metadata.InklessTopicMetadataTransformer
 import kafka.coordinator.transaction.{InitProducerIdResult, TransactionCoordinator}
 import kafka.network.RequestChannel
 import kafka.server.QuotaFactory.{QuotaManagers, UNBOUNDED_QUOTA}
 import kafka.server.handlers.DescribeTopicPartitionsRequestHandler
+import kafka.server.metadata.DisklessTopicView
 import kafka.server.share.SharePartitionManager
 import kafka.utils.Logging
 import org.apache.kafka.clients.CommonClientConfigs
@@ -113,8 +112,9 @@ class KafkaApis(val requestChannel: RequestChannel,
                 val apiVersionManager: ApiVersionManager,
                 val clientMetricsManager: ClientMetricsManager,
                 val groupConfigManager: GroupConfigManager,
-                disklessMetadata: Option[MetadataView] = None,
-                disklessDeleteRecordsForwarder: Option[DisklessDeleteRecordsForwarder] = None
+                disklessMetadata: Option[DisklessTopicView] = None,
+                disklessDeleteRecordsForwarder: Option[DisklessDeleteRecordsForwarder] = None,
+                disklessMetadataRewriter: Option[DisklessMetadataRewriter] = None
 ) extends ApiRequestHandler with Logging {
 
   type ProduceResponseStats = Map[TopicIdPartition, RecordValidationStats]
@@ -128,12 +128,8 @@ class KafkaApis(val requestChannel: RequestChannel,
     metadataCache, authHelper, config)
   val shareGroupConfigProvider = new ShareGroupConfigProvider(groupConfigManager)
 
-  val inklessTopicMetadataTransformer = disklessMetadata.map(metadata =>
-    new InklessTopicMetadataTransformer(metadata, config.inklessConfig.clientAzListenerMap()))
-
   def close(): Unit = {
     aclApis.close()
-    inklessTopicMetadataTransformer.foreach(t => t.close())
     info("Shutdown complete.")
   }
 
@@ -999,7 +995,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
 
-    inklessTopicMetadataTransformer.foreach(t => t.transformClusterMetadata(request.context.listenerName, request.header.clientId(), topicMetadata.asJava))
+    disklessMetadataRewriter.foreach(t => t.transformClusterMetadata(request.context.listenerName, request.header.clientId(), topicMetadata.asJava))
 
     val completeTopicMetadata =  unknownTopicIdsTopicMetadata ++
       topicMetadata ++ unauthorizedForCreateTopicMetadata ++ unauthorizedForDescribeTopicMetadata
@@ -1027,7 +1023,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     trace("Sending topic partitions metadata %s for correlation id %d to client %s".format(response.topics().asScala.mkString(","),
       request.header.correlationId, request.header.clientId))
 
-    inklessTopicMetadataTransformer.foreach(t => t.transformDescribeTopicResponse(request.context.listenerName, request.header.clientId, response))
+    disklessMetadataRewriter.foreach(t => t.transformDescribeTopicResponse(request.context.listenerName, request.header.clientId, response))
 
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs => {
       response.setThrottleTimeMs(requestThrottleMs)

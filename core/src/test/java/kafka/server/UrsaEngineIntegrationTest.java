@@ -52,10 +52,12 @@ import io.aiven.inkless.engine.DisklessEngineContext;
 import io.aiven.inkless.engine.DisklessEngineContractAssertions;
 import io.aiven.inkless.engine.DisklessLifecycleContext;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
+import io.aiven.inkless.engine.builtin.InklessStorageProvider;
 import io.aiven.inkless.engine.loader.DisklessEngines;
 import io.aiven.inkless.test_utils.MinioContainer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -97,8 +99,9 @@ public class UrsaEngineIntegrationTest {
                 cluster.format();
                 cluster.startup();
                 cluster.waitForReadyBrokers();
-                cluster.brokers().values().forEach(broker ->
-                    assertTrue(broker.sharedServer().inklessControlPlane().isEmpty()));
+                cluster.brokers().values().forEach(broker -> assertFalse(
+                    broker.sharedServer().disklessStorageProvider().get() instanceof InklessStorageProvider,
+                    "An external engine must not start the built-in control plane"));
 
                 Map<String, Object> clientConfig = new HashMap<>();
                 clientConfig.put("bootstrap.servers", cluster.bootstrapServers());
@@ -152,34 +155,35 @@ public class UrsaEngineIntegrationTest {
                     var oldId = admin.describeTopics(List.of(DISKLESS)).allTopicNames()
                         .get(30, TimeUnit.SECONDS).get(DISKLESS).topicId();
                     var originals = cluster.controllers().values().iterator().next().config().originals();
-                    var provider = DisklessEngines.load(originals);
-                    var providerConfig = DisklessEngines.providerConfigs(originals);
-                    var broker = cluster.brokers().values().iterator().next();
-                    var context = new DisklessEngineContext(providerConfig, broker.config().brokerId(), Time.SYSTEM,
-                        broker.kafkaScheduler(),
-                        () -> new KafkaDisklessMetadataSnapshot(broker.metadataCache().currentImage()),
-                        () -> broker.config().extractLogConfigMap());
-                    try (var engine = provider.createBrokerEngine(context)) {
-                        DisklessEngineContractAssertions.assertOffsetBatch(engine,
-                            new TopicIdPartition(oldId, partition),
-                            new TopicIdPartition(Uuid.randomUuid(), partition), 21L);
-                    }
-                    try (var inspection = provider.createTopicLifecycle(new DisklessLifecycleContext(providerConfig))) {
-                        var lifecycle = (DisklessTopicLifecycle.MetadataDriven) inspection;
-                        TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
-                            .stream().anyMatch(topic -> topic.topicId().equals(oldId)),
-                            30000, "Controller must reconcile the Ursa catalog");
-                        admin.deleteTopics(List.of(DISKLESS)).all().get(30, TimeUnit.SECONDS);
-                        TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
-                            .stream().noneMatch(topic -> topic.topicId().equals(oldId)),
-                            30000, "Controller must delete the old topic incarnation from Ursa");
-                        admin.createTopics(List.of(new NewTopic(DISKLESS, 1, (short) 1)
-                            .configs(Map.of(TopicConfig.DISKLESS_ENABLE_CONFIG, "true"))))
-                            .all().get(30, TimeUnit.SECONDS);
-                        try (var recreatedProducer = new KafkaProducer<>(clientConfig,
-                                new StringSerializer(), new StringSerializer())) {
-                            assertEquals(0L, recreatedProducer.send(new ProducerRecord<>(DISKLESS, "recreated"))
-                                .get(30, TimeUnit.SECONDS).offset());
+                    try (var provider = DisklessEngines.load(originals)) {
+                        var providerConfig = DisklessEngines.providerConfigs(originals);
+                        var broker = cluster.brokers().values().iterator().next();
+                        var context = new DisklessEngineContext(providerConfig, broker.config().brokerId(), Time.SYSTEM,
+                            broker.kafkaScheduler(),
+                            () -> new KafkaDisklessMetadataSnapshot(broker.metadataCache().currentImage()),
+                            () -> broker.config().extractLogConfigMap());
+                        try (var engine = provider.createBrokerEngine(context)) {
+                            DisklessEngineContractAssertions.assertOffsetBatch(engine,
+                                new TopicIdPartition(oldId, partition),
+                                new TopicIdPartition(Uuid.randomUuid(), partition), 21L);
+                        }
+                        try (var inspection = provider.createTopicLifecycle(new DisklessLifecycleContext(providerConfig))) {
+                            var lifecycle = (DisklessTopicLifecycle.MetadataDriven) inspection;
+                            TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
+                                .stream().anyMatch(topic -> topic.topicId().equals(oldId)),
+                                30000, "Controller must reconcile the Ursa catalog");
+                            admin.deleteTopics(List.of(DISKLESS)).all().get(30, TimeUnit.SECONDS);
+                            TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
+                                .stream().noneMatch(topic -> topic.topicId().equals(oldId)),
+                                30000, "Controller must delete the old topic incarnation from Ursa");
+                            admin.createTopics(List.of(new NewTopic(DISKLESS, 1, (short) 1)
+                                .configs(Map.of(TopicConfig.DISKLESS_ENABLE_CONFIG, "true"))))
+                                .all().get(30, TimeUnit.SECONDS);
+                            try (var recreatedProducer = new KafkaProducer<>(clientConfig,
+                                    new StringSerializer(), new StringSerializer())) {
+                                assertEquals(0L, recreatedProducer.send(new ProducerRecord<>(DISKLESS, "recreated"))
+                                    .get(30, TimeUnit.SECONDS).offset());
+                            }
                         }
                     }
                 }

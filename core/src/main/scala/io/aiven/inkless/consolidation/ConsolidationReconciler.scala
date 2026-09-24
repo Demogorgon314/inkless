@@ -20,7 +20,7 @@ package io.aiven.inkless.consolidation
 
 import kafka.cluster.Partition
 import kafka.server.{InitialFetchState, ReplicaManager, ReplicationQuotaManager}
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.DisklessTopicView
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.logger.StateChangeLogger
 import org.apache.kafka.metadata.PartitionRegistration
@@ -62,7 +62,7 @@ private class ReconciliationException(message: String) extends RuntimeException(
 class ConsolidationReconciler(replicaManager: ReplicaManager,
                               stateChangeLogger: StateChangeLogger,
                               consolidationMetrics: ConsolidationMetrics,
-                              inklessMetadataView: InklessMetadataView,
+                              disklessTopicView: DisklessTopicView,
                               initialFetchOffset: UnifiedLog => Long,
                               consolidationFetcherManager: ConsolidationFetcherManager,
                               consolidationQuotaManager: ReplicationQuotaManager) {
@@ -102,7 +102,7 @@ class ConsolidationReconciler(replicaManager: ReplicaManager,
       // seal state (committed seal + local LEO caught up), not by whether the topic is diskless,
       // so this gate is where that precondition is established.
       // Under the diskless+remote-storage invariant, a diskless topic is always consolidating.
-      if (inklessMetadataView.isDisklessTopic(tp.topic)) {
+      if (disklessTopicView.isDisklessTopic(tp.topic)) {
         replicaManager.onlinePartition(tp).foreach(partition => consolidatingDisklessPartitionsToStartFetching.put(tp, partition))
       }
     }
@@ -135,13 +135,13 @@ class ConsolidationReconciler(replicaManager: ReplicaManager,
 
   private def reconcileSwitchedConsolidatingDisklessPartition(partition: Partition): ConsolidationStartState = {
     val tp = partition.topicPartition
-    inklessMetadataView.getClassicToDisklessStartOffset(tp) match {
+    disklessTopicView.getClassicToDisklessStartOffset(tp) match {
       case PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET =>
         // Born-diskless/born-consolidated topics don't have a classic seal boundary to reconcile.
         ConsolidationStartState.Ready(initialFetchOffset(partition.localLogOrException))
       case PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING =>
         ConsolidationStartState.Retry(s"Skipping consolidation for $tp because classic-to-diskless migration is still pending")
-      case seal if seal >= 0 && !inklessMetadataView.isRemoteStorageEnabled(tp.topic) =>
+      case seal if seal >= 0 && !disklessTopicView.isRemoteStorageEnabled(tp.topic) =>
         // Unsupported state: a switched topic (seal >= 0) with remote storage off violates the invariant.
         // This can only come from metadata written before the atomic switch enforcement.
         // Mark Failed to prevent unbounded log growth. FailedPartitionsCount surfaces it.

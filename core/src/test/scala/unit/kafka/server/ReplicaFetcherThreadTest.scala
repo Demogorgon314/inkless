@@ -796,7 +796,7 @@ class ReplicaFetcherThreadTest {
     when(replicaManager.getPartitionOrException(any[TopicPartition])).thenReturn(partition)
     when(replicaManager.localLogOrException(t1p0)).thenReturn(log)
     when(replicaManager.brokerTopicStats).thenReturn(new BrokerTopicStats)
-    when(replicaManager.inklessMetadataView()).thenReturn(inklessMetadataView)
+    when(replicaManager.disklessTopicView()).thenReturn(inklessMetadataView)
     when(replicaManager.replicaFetcherManager).thenReturn(replicaFetcherManager)
 
     val thread = createReplicaFetcherThread(
@@ -885,7 +885,7 @@ class ReplicaFetcherThreadTest {
     val replicaManager: ReplicaManager = mock(classOf[ReplicaManager])
     when(replicaManager.getPartitionOrException(any[TopicPartition])).thenReturn(partition)
     when(replicaManager.brokerTopicStats).thenReturn(new BrokerTopicStats)
-    when(replicaManager.inklessMetadataView()).thenReturn(inklessMetadataView)
+    when(replicaManager.disklessTopicView()).thenReturn(inklessMetadataView)
     when(replicaManager.replicaFetcherManager).thenReturn(replicaFetcherManager)
 
     val replicaQuota: ReplicaQuota = mock(classOf[ReplicaQuota])
@@ -1009,7 +1009,7 @@ class ReplicaFetcherThreadTest {
     val view: InklessMetadataView = mock(classOf[InklessMetadataView])
     when(view.getClassicToDisklessStartOffset(any[TopicPartition]))
       .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-    when(replicaManager.inklessMetadataView()).thenReturn(view)
+    when(replicaManager.disklessTopicView()).thenReturn(view)
   }
 
   @ParameterizedTest

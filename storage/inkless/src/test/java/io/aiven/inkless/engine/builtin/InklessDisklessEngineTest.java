@@ -30,11 +30,13 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.function.Consumer;
 
 import io.aiven.inkless.common.SharedState;
+import io.aiven.inkless.config.InklessConfig;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.ControlPlane;
@@ -46,6 +48,7 @@ import io.aiven.inkless.delete.FileCleaner;
 import io.aiven.inkless.delete.RetentionEnforcer;
 import io.aiven.inkless.delete.TopicPurger;
 import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessMetadataSnapshot.TopicMetadata;
 import io.aiven.inkless.engine.DisklessEngineContractAssertions;
 import io.aiven.inkless.engine.DisklessLifecycleContext;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
@@ -74,7 +77,17 @@ import static org.mockito.Mockito.when;
 public class InklessDisklessEngineTest {
     /** Returns a native engine whose handlers are mocks and whose control plane is the supplied one. */
     public static DisklessEngine nativeEngine(ControlPlane controlPlane) {
+        return nativeEngine(mock(SharedState.class, RETURNS_DEEP_STUBS), controlPlane);
+    }
+
+    /** Returns a native engine with mocked handlers that reads topic metadata from the supplied view. */
+    public static DisklessEngine nativeEngine(ControlPlane controlPlane, MetadataView metadata) {
         var state = mock(SharedState.class, RETURNS_DEEP_STUBS);
+        when(state.metadata()).thenReturn(metadata);
+        return nativeEngine(state, controlPlane);
+    }
+
+    private static DisklessEngine nativeEngine(SharedState state, ControlPlane controlPlane) {
         when(state.controlPlane()).thenReturn(controlPlane);
         try (var append = mockConstruction(AppendHandler.class);
              var fetch = mockConstruction(FetchHandler.class);
@@ -94,6 +107,24 @@ public class InklessDisklessEngineTest {
         assertTrue(engine.recordDeletion().isPresent());
         assertTrue(engine.logTiering().isPresent());
         assertTrue(engine.logTransition().isPresent());
+    }
+
+    @Test
+    public void metadataCallbacksKeepTheTopicConfigCacheCurrent() {
+        var metadata = mock(MetadataView.class);
+        var engine = nativeEngine(mock(ControlPlane.class), metadata);
+        var topic = new TopicMetadata(Uuid.randomUuid(), "topic", 1, Map.of("retention.ms", "1000"), 7L);
+
+        engine.onTopicConfigChanged(topic);
+        var overrides = new Properties();
+        overrides.put("retention.ms", "1000");
+        verify(metadata).updateTopicConfig("topic", overrides);
+
+        engine.onTopicDeleted("topic", topic.topicId());
+        verify(metadata).removeTopicConfig("topic");
+
+        engine.onBrokerLogDefaultsChanged();
+        verify(metadata).reconfigureDefaultLogConfig();
     }
 
     @Test
@@ -211,12 +242,15 @@ public class InklessDisklessEngineTest {
     }
 
     @Test
-    public void controllerProviderCreatesOnlyTheRequestDrivenLifecycle() throws Exception {
-        var provider = InklessStorageProvider.forController(mock(ControlPlane.class));
+    public void providerWithoutBrokerServicesCreatesOnlyTheLifecycleAndBorrowsTheControlPlane() throws Exception {
+        var controlPlane = mock(ControlPlane.class);
+        var provider = InklessStorageProvider.borrowing(mock(InklessConfig.class), controlPlane);
         try (var lifecycle = provider.createTopicLifecycle(new DisklessLifecycleContext(Map.of()))) {
             assertInstanceOf(DisklessTopicLifecycle.RequestDriven.class, lifecycle);
         }
         assertThrows(IllegalStateException.class, () -> provider.createBrokerEngine(
             DisklessEnginesTest.testContext(Map.of(), mock(Scheduler.class))));
+        provider.close();
+        verify(controlPlane, never()).close();
     }
 }

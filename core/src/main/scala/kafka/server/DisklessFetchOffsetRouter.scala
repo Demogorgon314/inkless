@@ -17,7 +17,7 @@
 package kafka.server
 
 import kafka.server.DisklessOffsetJob
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.DisklessTopicView
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.ApiException
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition
@@ -60,7 +60,7 @@ import scala.jdk.OptionConverters.RichOptional
  * and finally calls `job.start()` to fire the underlying control plane job.
  */
 class DisklessFetchOffsetRouter(
-  inklessMetadataView: InklessMetadataView,
+  disklessTopicView: DisklessTopicView,
   disklessManagedReplicasEnabled: Boolean,
   disklessConsolidationEnabled: Boolean,
   delayedRemoteListOffsetsPurgatory: DelayedOperationPurgatory[DelayedRemoteListOffsets]
@@ -95,11 +95,11 @@ class DisklessFetchOffsetRouter(
     hasCompleteClassicPrefix: (TopicPartition, Long) => Boolean,
     classicFetchOffset: (TopicPartition, ListOffsetsPartition, Boolean) => ListOffsetsPartitionStatus
   ): ListOffsetsPartitionStatus = {
-    val classicToDisklessStartOffset = inklessMetadataView.getClassicToDisklessStartOffset(topicPartition)
+    val classicToDisklessStartOffset = disklessTopicView.getClassicToDisklessStartOffset(topicPartition)
     val switchPending = classicToDisklessStartOffset == PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING
     val hasCommittedSwitchOffset = classicToDisklessStartOffset > 0
     val isSwitchedWithClassicAccess = hasCommittedSwitchOffset && disklessManagedReplicasEnabled
-    val isConsolidatingPartition = disklessConsolidationEnabled && inklessMetadataView.isConsolidatingDisklessTopic(topicPartition.topic)
+    val isConsolidatingPartition = disklessConsolidationEnabled && disklessTopicView.isConsolidatingDisklessTopic(topicPartition.topic)
 
     // Switched partitions seal their classic local log: once classicToDisklessStartOffset is
     // committed the LEO can no longer grow. Any replica whose local HW has reached the seal

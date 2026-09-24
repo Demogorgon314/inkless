@@ -16,6 +16,7 @@
  */
 package io.aiven.inkless.engine.builtin;
 
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.storage.internals.log.LogConfig;
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
@@ -36,9 +37,9 @@ import io.aiven.inkless.engine.DisklessTopicLifecycle;
 /**
  * Creates the built-in Inkless components in the broker runtime.
  *
- * <p>The control plane is shared by the broker and controller roles of one process, so the
- * provider borrows it and never closes it. Broker services exist only on brokers: a controller-only
- * provider rejects broker engine creation.
+ * <p>The process-scoped provider owns the control plane that the broker and controller roles share.
+ * Broker engines additionally need Inkless-specific broker services, which the broker attaches with
+ * {@link #withBrokerServices}; the returned view borrows the control plane.
  */
 public final class InklessStorageProvider implements DisklessStorageProvider {
     /** Consolidation fetch settings; present only when Kafka runs consolidation fetchers. */
@@ -46,14 +47,12 @@ public final class InklessStorageProvider implements DisklessStorageProvider {
                                       int requestRateLimit, int maxBatchesPerPartition) { }
 
     /** Inkless-specific broker dependencies that the storage-neutral context does not carry. */
-    public record BrokerServices(InklessConfig config,
-                                 MetadataView metadata,
+    public record BrokerServices(MetadataView metadata,
                                  BrokerTopicStats metrics,
                                  Supplier<LogConfig> defaultLogConfig,
                                  Optional<ConsolidationConfig> consolidation,
                                  long initialTaskDelayMs) {
         public BrokerServices {
-            Objects.requireNonNull(config, "config");
             Objects.requireNonNull(metadata, "metadata");
             Objects.requireNonNull(metrics, "metrics");
             Objects.requireNonNull(defaultLogConfig, "defaultLogConfig");
@@ -61,27 +60,39 @@ public final class InklessStorageProvider implements DisklessStorageProvider {
         }
     }
 
+    private final InklessConfig config;
     private final ControlPlane controlPlane;
+    private final boolean ownsControlPlane;
     private final Optional<BrokerServices> broker;
 
-    private InklessStorageProvider(ControlPlane controlPlane, Optional<BrokerServices> broker) {
+    private InklessStorageProvider(InklessConfig config, ControlPlane controlPlane, boolean ownsControlPlane,
+                                   Optional<BrokerServices> broker) {
+        this.config = config;
         this.controlPlane = Objects.requireNonNull(controlPlane, "controlPlane");
+        this.ownsControlPlane = ownsControlPlane;
         this.broker = broker;
     }
 
-    public static InklessStorageProvider forBroker(ControlPlane controlPlane, BrokerServices services) {
-        return new InklessStorageProvider(controlPlane, Optional.of(services));
+    /** Creates the process-scoped provider, which owns a new control plane. */
+    public static InklessStorageProvider create(InklessConfig config, Time time) {
+        return new InklessStorageProvider(config, ControlPlane.create(config, time), true, Optional.empty());
     }
 
-    public static InklessStorageProvider forController(ControlPlane controlPlane) {
-        return new InklessStorageProvider(controlPlane, Optional.empty());
+    /** Returns a provider that borrows an existing control plane, for tests and embedding. */
+    public static InklessStorageProvider borrowing(InklessConfig config, ControlPlane controlPlane) {
+        return new InklessStorageProvider(config, controlPlane, false, Optional.empty());
+    }
+
+    /** Returns a view that creates broker engines with the supplied services and borrows the control plane. */
+    public InklessStorageProvider withBrokerServices(BrokerServices services) {
+        return new InklessStorageProvider(config, controlPlane, false, Optional.of(services));
     }
 
     @Override
     public DisklessEngine createBrokerEngine(DisklessEngineContext context) {
         var services = broker.orElseThrow(() ->
             new IllegalStateException("Broker services are required to create a broker engine"));
-        var state = SharedState.initialize(context.time(), context.brokerId(), services.config(),
+        var state = SharedState.initialize(context.time(), context.brokerId(), config,
             services.metadata(), controlPlane, services.metrics(), services.defaultLogConfig());
         try {
             return new InklessDisklessEngine(state, services.consolidation(), context.scheduler(),
@@ -99,5 +110,12 @@ public final class InklessStorageProvider implements DisklessStorageProvider {
     @Override
     public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) {
         return new InklessTopicLifecycle(controlPlane);
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (ownsControlPlane) {
+            controlPlane.close();
+        }
     }
 }

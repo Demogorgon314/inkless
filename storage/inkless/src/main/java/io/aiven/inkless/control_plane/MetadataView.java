@@ -24,6 +24,7 @@ import org.apache.kafka.common.network.ListenerName;
 import org.apache.kafka.storage.internals.log.LogConfig;
 
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 
 public interface MetadataView {
@@ -40,6 +41,15 @@ public interface MetadataView {
     boolean isConsolidatingDisklessTopic(String topicName);
 
     LogConfig getTopicConfig(String topicName);
+
+    /** Replaces the cached configuration of a topic with the committed overrides. */
+    void updateTopicConfig(String topicName, Properties topicOverrides);
+
+    /** Drops the cached configuration of a deleted topic. */
+    void removeTopicConfig(String topicName);
+
+    /** Rebuilds cached configurations after the broker log defaults change. */
+    void reconfigureDefaultLogConfig();
 
     Set<TopicIdPartition> getDisklessTopicPartitions();
 

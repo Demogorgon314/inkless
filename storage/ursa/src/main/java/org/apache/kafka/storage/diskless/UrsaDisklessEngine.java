@@ -43,6 +43,7 @@ import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
 import io.aiven.inkless.engine.DisklessMetadataSnapshot;
 import io.aiven.inkless.engine.DisklessRequestContext;
+import io.aiven.inkless.engine.PartitionPlacement;
 
 /** Bridges the broker SPI to the storage implementation copied from UFK. */
 public final class UrsaDisklessEngine implements DisklessEngine {
@@ -51,6 +52,7 @@ public final class UrsaDisklessEngine implements DisklessEngine {
     private final DisklessStorageEngine storage;
     private final Supplier<DisklessMetadataSnapshot> metadata;
     private final Scheduler scheduler;
+    private final PartitionPlacement placement = new UrsaPartitionPlacement();
     private ScheduledFuture<?> maintenance;
     private boolean closed;
 
@@ -59,6 +61,11 @@ public final class UrsaDisklessEngine implements DisklessEngine {
         this.scheduler = context.scheduler();
         storage = new UrsaStorageEngineImpl(context.time(), context.brokerId(), config,
             context.brokerLogDefaults(), context.metadata());
+    }
+
+    @Override
+    public PartitionPlacement placement() {
+        return placement;
     }
 
     @Override

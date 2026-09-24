@@ -32,6 +32,10 @@ core/src/test/scala/io/aiven/inkless/**                  @aiven/inkless  # tests
 core/src/main/scala/kafka/server/*Diskless*.scala        @aiven/inkless  # net-new diskless files in the upstream package (e.g. DisklessFetchOffsetRouter)
 core/src/main/scala/kafka/server/InitDisklessLog*.scala  @aiven/inkless  # net-new: InitDisklessLogManager / State / BatchQueue
 core/src/test/java/kafka/server/Inkless*.java            @aiven/inkless
+core/src/main/java/kafka/server/DisklessMetadataRewriter.java      @aiven/inkless  # applies engine placement to metadata responses
+core/src/main/java/kafka/server/metadata/DisklessTopicView.java   @aiven/inkless  # Kafka-owned diskless topic view used for routing
+core/src/main/scala/kafka/server/metadata/KafkaDisklessTopicView.scala  @aiven/inkless
+core/src/test/java/kafka/server/DisklessMetadataRewriterTest.java  @aiven/inkless
 core/src/test/scala/kafka/server/metadata/Inkless*.scala @aiven/inkless
 docs/inkless/**                                          @aiven/inkless
 config/inkless/**                                        @aiven/inkless

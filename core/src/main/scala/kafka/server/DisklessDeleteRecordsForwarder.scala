@@ -18,7 +18,7 @@
 
 package kafka.server
 
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.DisklessTopicView
 import kafka.utils.Logging
 import org.apache.kafka.clients.{ClientResponse, NetworkClient, RequestCompletionHandler}
 import org.apache.kafka.common.message.DeleteRecordsRequestData
@@ -44,7 +44,7 @@ import scala.jdk.CollectionConverters._
  * consolidating), `ReplicaManager.deleteRecords` splits the request into a broker-agnostic diskless
  * (control-plane) leg and a local-log leg. The local-log leg only succeeds on the real KRaft leader
  * (`Partition.deleteRecordsOnLeader` requires `leaderLogIfLocal`). Because
- * `InklessTopicMetadataTransformer` advertises a hash/AZ-selected replica as the client-facing
+ * `InklessPartitionPlacement` advertises a hash/AZ-selected replica as the client-facing
  * leader for locality-aware read routing, the AdminClient generally delivers `DeleteRecords` to a
  * follower, which rejects it with `NOT_LEADER_OR_FOLLOWER`.
  *
@@ -59,7 +59,7 @@ class DisklessDeleteRecordsForwarder(
   config: KafkaConfig,
   networkClient: NetworkClient,
   metadataCache: MetadataCache,
-  metadataView: InklessMetadataView,
+  metadataView: DisklessTopicView,
   time: Time
 ) extends InterBrokerSendThread(
   "DisklessDeleteRecordsForwarder-" + config.brokerId,

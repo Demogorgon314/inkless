@@ -24,6 +24,7 @@ import org.apache.kafka.common.utils.Utils;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
@@ -46,8 +47,8 @@ public final class DisklessEngines {
     }
 
     /**
-     * Returns a provider whose components run in the configured plugin runtime. Each created
-     * component holds its own runtime lease and releases it on close.
+     * Returns the process-scoped provider from the configured plugin runtime. The provider holds a
+     * runtime lease until it is closed, and each created component holds its own lease.
      */
     public static DisklessStorageProvider load(Map<String, ?> configs) {
         Object className = configs.get(CLASS_NAME_CONFIG);
@@ -66,7 +67,19 @@ public final class DisklessEngines {
                 throw new ConfigException(CLASS_PATH_CONFIG, classPath, "No plugin files found");
             }
         }
-        return new IsolatedProvider(className.toString(), urls);
+        DisklessClassLoaderRegistry.Lease lease = null;
+        try {
+            lease = DisklessClassLoaderRegistry.acquire(urls, DisklessEngine.class.getClassLoader());
+            var classLoader = lease.classLoader();
+            DisklessStorageProvider provider = DisklessClassLoaderContext.call(classLoader, () -> Utils.newInstance(
+                Class.forName(className.toString(), true, classLoader).asSubclass(DisklessStorageProvider.class)));
+            return new IsolatedProvider(className.toString(), urls, provider, lease);
+        } catch (Throwable e) {
+            if (lease != null) {
+                DisklessClassLoaderRegistry.closeLeaseOnFailure(lease, e);
+            }
+            throw propagate(className.toString(), e);
+        }
     }
 
     /** Returns the provider settings with the {@code diskless.engine.config.} prefix removed. */
@@ -80,30 +93,53 @@ public final class DisklessEngines {
         return Map.copyOf(properties);
     }
 
-    private record IsolatedProvider(String className, URL[] urls) implements DisklessStorageProvider {
+    private static RuntimeException propagate(String className, Throwable e) {
+        if (e instanceof RuntimeException runtimeException) {
+            return runtimeException;
+        }
+        if (e instanceof Error error) {
+            throw error;
+        }
+        return new KafkaException("Failed to create diskless component from " + className, e);
+    }
+
+    private static final class IsolatedProvider implements DisklessStorageProvider {
+        private final String className;
+        private final URL[] urls;
+        private final DisklessStorageProvider delegate;
+        private final DisklessClassLoaderRegistry.Lease lease;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private IsolatedProvider(String className, URL[] urls, DisklessStorageProvider delegate,
+                                 DisklessClassLoaderRegistry.Lease lease) {
+            this.className = className;
+            this.urls = urls;
+            this.delegate = delegate;
+            this.lease = lease;
+        }
+
         @Override
         public DisklessEngine createBrokerEngine(DisklessEngineContext context) {
-            return create(DisklessEngine.class, (provider, classLoader) -> provider.createBrokerEngine(
+            return create(DisklessEngine.class, classLoader -> delegate.createBrokerEngine(
                 context.withScheduler(DisklessClassLoaderContext.scheduler(context.scheduler(), classLoader))));
         }
 
         @Override
         public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) {
-            return create(DisklessTopicLifecycle.class, (provider, classLoader) -> provider.createTopicLifecycle(context));
+            return create(DisklessTopicLifecycle.class, classLoader -> delegate.createTopicLifecycle(context));
         }
 
         private <T> T create(Class<T> type, ComponentFactory<T> factory) {
-            DisklessClassLoaderRegistry.Lease lease = null;
+            if (closed.get()) {
+                throw new IllegalStateException("Diskless storage provider " + className + " is closed");
+            }
+            DisklessClassLoaderRegistry.Lease componentLease = null;
             try {
-                lease = DisklessClassLoaderRegistry.acquire(urls, DisklessEngine.class.getClassLoader());
-                var classLoader = lease.classLoader();
-                T component = DisklessClassLoaderContext.call(classLoader, () -> {
-                    DisklessStorageProvider provider = Utils.newInstance(
-                        Class.forName(className, true, classLoader).asSubclass(DisklessStorageProvider.class));
-                    return factory.create(provider, classLoader);
-                });
+                componentLease = DisklessClassLoaderRegistry.acquire(urls, DisklessEngine.class.getClassLoader());
+                var classLoader = componentLease.classLoader();
+                T component = DisklessClassLoaderContext.call(classLoader, () -> factory.create(classLoader));
                 try {
-                    return DisklessClassLoaderContext.leased(type, component, lease);
+                    return DisklessClassLoaderContext.leased(type, component, componentLease);
                 } catch (RuntimeException | Error failure) {
                     try {
                         DisklessClassLoaderContext.call(classLoader, () -> {
@@ -116,22 +152,31 @@ public final class DisklessEngines {
                     throw failure;
                 }
             } catch (Throwable e) {
-                if (lease != null) {
-                    DisklessClassLoaderRegistry.closeLeaseOnFailure(lease, e);
+                if (componentLease != null) {
+                    DisklessClassLoaderRegistry.closeLeaseOnFailure(componentLease, e);
                 }
-                if (e instanceof RuntimeException runtimeException) {
-                    throw runtimeException;
-                }
-                if (e instanceof Error error) {
-                    throw error;
-                }
-                throw new KafkaException("Failed to create diskless component from " + className, e);
+                throw propagate(className, e);
+            }
+        }
+
+        @Override
+        public void close() throws Exception {
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                DisklessClassLoaderContext.call(lease.classLoader(), () -> {
+                    delegate.close();
+                    return null;
+                });
+            } finally {
+                lease.close();
             }
         }
     }
 
     @FunctionalInterface
     private interface ComponentFactory<T> {
-        T create(DisklessStorageProvider provider, ClassLoader classLoader) throws Exception;
+        T create(ClassLoader classLoader) throws Exception;
     }
 }

@@ -17,7 +17,7 @@
 
 package kafka.server
 
-import io.aiven.inkless.control_plane.ControlPlane
+import io.aiven.inkless.engine.DisklessStorageProvider
 import kafka.metrics.KafkaMetricsReporter
 import kafka.raft.KafkaRaftManager
 import kafka.server.Server.MetricsPrefix
@@ -128,7 +128,7 @@ class SharedServer(
   @volatile private var snapshotGenerator: SnapshotGenerator = _
   @volatile private var metadataLoaderMetrics: MetadataLoaderMetrics = _
 
-  @volatile var inklessControlPlane: Option[ControlPlane] = None
+  @volatile var disklessStorageProvider: Option[DisklessStorageProvider] = None
 
   def clusterId: String = metaPropsEnsemble.clusterId().get()
 
@@ -290,9 +290,7 @@ class SharedServer(
           Option(controllerServerMetrics).foreach(_.setIgnoredStaticVoters(ignoredStaticVoters))
         }
 
-        if (brokerConfig.disklessStorageSystemEnabled &&
-          !sharedServerConfig.originals.containsKey("diskless.engine.class.name"))
-          inklessControlPlane = Some(ControlPlane.create(sharedServerConfig.inklessConfig, time))
+        disklessStorageProvider = DisklessEngineFactory.createProvider(brokerConfig, time)
 
         val _raftManager = new KafkaRaftManager[ApiMessageAndVersion](
           clusterId,
@@ -402,8 +400,8 @@ class SharedServer(
         raftManager = null
       }
 
-      // Inkless
-      inklessControlPlane.foreach(Utils.closeQuietly(_, "inkless control plane"))
+      disklessStorageProvider.foreach(Utils.closeQuietly(_, "diskless storage provider"))
+      disklessStorageProvider = None
 
       Utils.closeQuietly(controllerServerMetrics, "controller server metrics")
       controllerServerMetrics = null

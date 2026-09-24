@@ -22,7 +22,7 @@ import io.aiven.inkless.engine.LogTiering
 import org.apache.kafka.common.protocol.Errors
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.DisklessTopicView
 import kafka.utils.Logging
 import org.apache.kafka.common.TopicIdPartition
 import org.apache.kafka.metadata.PartitionRegistration
@@ -30,15 +30,15 @@ import org.apache.kafka.metadata.PartitionRegistration
 import scala.jdk.CollectionConverters._
 
 class ConsolidatedDisklessLogPruner(replicaManager: ReplicaManager,
-                                    inklessMetadataView: InklessMetadataView,
+                                    disklessTopicView: DisklessTopicView,
                                     storage: LogTiering) extends Runnable with Logging {
 
   override def run(): Unit = {
     // Read the classic-to-diskless start offset once per partition and thread it through, so the
     // eligibility check and the per-partition prune decision always see the same value (no TOCTOU
     // between dropping SWITCH_PENDING and computing the safe prune offset).
-    val eligiblePartitionsWithSeal = inklessMetadataView.getConsolidatingDisklessTopicPartitions.asScala
-      .map(tip => (tip, inklessMetadataView.getClassicToDisklessStartOffset(tip.topicPartition)))
+    val eligiblePartitionsWithSeal = disklessTopicView.getConsolidatingDisklessTopicPartitions.asScala
+      .map(tip => (tip, disklessTopicView.getClassicToDisklessStartOffset(tip.topicPartition)))
       .filter { case (_, seal) => seal != PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING }
       .map { case (tip, seal) => (replicaManager.getPartitionOrError(tip.topicPartition), seal) }
     eligiblePartitionsWithSeal

@@ -29,7 +29,7 @@ import java.util.function.Consumer
 import kafka.network.RequestChannel
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.logger.RuntimeLoggerManager
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import kafka.utils.Logging
 import org.apache.kafka.clients.admin.{AlterConfigOp, EndpointType}
 import org.apache.kafka.common.Uuid.ZERO_UUID
@@ -95,7 +95,7 @@ class ControllerApis(
   val runtimeLoggerManager = new RuntimeLoggerManager(config.nodeId, logger.underlying)
   private val aclApis = new AclApis(authHelper, authorizerPlugin, requestHelper, ProcessRole.ControllerRole, config)
 
-  private val inklessMetadataView = new InklessMetadataView(metadataCache, () => config.extractLogConfigMap)
+  private val disklessTopicView = new KafkaDisklessTopicView(metadataCache)
 
   def isClosed: Boolean = aclApis.isClosed
 
@@ -361,7 +361,7 @@ class ControllerApis(
         // so a failure remains retryable. Metadata-driven providers handle committed deletion in
         // the reconciler and do not perform storage work on this request path.
         val disklessTopicIds = idToName.asScala
-          .filter { case (_, name) => inklessMetadataView.isDisklessTopic(name) }
+          .filter { case (_, name) => disklessTopicView.isDisklessTopic(name) }
           .map { case (topicId, _) => topicId }
           .toSet.asJava
         if (!config.disklessStorageSystemEnabled && !disklessTopicIds.isEmpty)
@@ -500,7 +500,7 @@ class ControllerApis(
       val timer = time.timer(Duration.ofSeconds(10))
       while (timer.notExpired()
         // `getTopicId` returns `ZERO_UUID` when not found
-        && successfullyCreatedTopics.exists {t => inklessMetadataView.getTopicId(t.name()) != t.topicId()}) {
+        && successfullyCreatedTopics.exists {t => disklessTopicView.getTopicId(t.name()) != t.topicId()}) {
         timer.sleep(10)
       }
       if (timer.isExpired) {
@@ -510,7 +510,7 @@ class ControllerApis(
       }
 
       val operations = successfullyCreatedTopics
-        .filter(t => inklessMetadataView.isDisklessTopic(t.name()))
+        .filter(t => disklessTopicView.isDisklessTopic(t.name()))
         .map(t => lifecycle.ensureTopic(t.name(), t.topicId(), t.numPartitions()))
       CompletableFuture.allOf(operations.toSeq: _*)
     }.getOrElse(CompletableFuture.completedFuture(null))
@@ -999,7 +999,7 @@ class ControllerApis(
           }
           // In contrast to the topic creation, we only create new partitions to existing topics.
           // Hence, the topics themselves must be in the metadata already, no need to wait.
-          .filter { case (req, _) => inklessMetadataView.isDisklessTopic(req.name()) }
+          .filter { case (req, _) => disklessTopicView.isDisklessTopic(req.name()) }
         val topicNames = eligibleRequests.map(_._1.name()).distinct.toList.asJava
         controller.findTopicIds(context, topicNames).thenCompose { topicIds =>
           val createPartitionRequests = eligibleRequests.flatMap { case (req, res) =>

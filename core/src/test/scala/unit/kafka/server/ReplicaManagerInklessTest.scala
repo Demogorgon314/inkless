@@ -46,7 +46,7 @@ import org.apache.kafka.common.message.ListOffsetsResponseData.{ListOffsetsParti
 import org.apache.kafka.common.message.DeleteRecordsResponseData
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult
 import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.{OffsetForLeaderPartition, OffsetForLeaderTopic}
-import org.apache.kafka.common.metadata.{ConfigRecord, PartitionChangeRecord, PartitionRecord, TopicRecord}
+import org.apache.kafka.common.metadata.{ConfigRecord, PartitionChangeRecord, PartitionRecord, RemoveTopicRecord, TopicRecord}
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.record.TimestampType
@@ -176,6 +176,36 @@ class ReplicaManagerInklessTest {
         verify(engine, times(2)).onTopicConfigChanged(updates.capture())
         assertEquals(43L, updates.getValue.sourceRevision())
         assertEquals(util.Map.of(TopicConfig.DISKLESS_ENABLE_CONFIG, "true"), updates.getValue.configs())
+      } finally {
+        replicaManager.shutdown(checkpointHW = false)
+      }
+    } finally {
+      pluginConstructor.close()
+    }
+  }
+
+  @Test
+  def testTopicDeletionAndBrokerDefaultChangesReachTheEngine(): Unit = {
+    val pluginConstructor = mockConstruction(classOf[TestDisklessEngine])
+    try {
+      val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
+        engineClassName = Some(classOf[TestDisklessProvider].getName))
+      try {
+        val engine = pluginConstructor.constructed().get(0)
+        val creation = new MetadataDelta.Builder().setImage(MetadataImage.EMPTY).build()
+        creation.replay(new TopicRecord().setName(disklessTopicPartition.topic()).setTopicId(disklessTopicPartition.topicId()))
+        // Hosted on another broker, so the deletion changes no local replica.
+        creation.replay(new PartitionRecord().setTopicId(disklessTopicPartition.topicId()).setPartitionId(0)
+          .setReplicas(util.List.of[Integer](2)).setIsr(util.List.of[Integer](2)).setLeader(2))
+        val image = creation.apply(new MetadataProvenance(42L, 0, 0L, true))
+
+        val deletion = new MetadataDelta.Builder().setImage(image).build()
+        deletion.replay(new RemoveTopicRecord().setTopicId(disklessTopicPartition.topicId()))
+        replicaManager.applyDelta(deletion.topicsDelta(), imageFromTopics(deletion.topicsDelta().apply()))
+        verify(engine).onTopicDeleted(disklessTopicPartition.topic(), disklessTopicPartition.topicId())
+
+        replicaManager.onBrokerLogDefaultsChanged()
+        verify(engine).onBrokerLogDefaultsChanged()
       } finally {
         replicaManager.shutdown(checkpointHW = false)
       }
@@ -318,11 +348,11 @@ class ReplicaManagerInklessTest {
   def testDisklessLeaderEpochDelegatesToMetadataView(): Unit = {
     val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()))
     try {
-      when(replicaManager.inklessMetadataView().getDisklessLeaderEpoch(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getDisklessLeaderEpoch(disklessTopicPartition.topicPartition()))
         .thenReturn(7)
 
       assertEquals(7, replicaManager.disklessLeaderEpoch(disklessTopicPartition.topicPartition()))
-      verify(replicaManager.inklessMetadataView()).getDisklessLeaderEpoch(disklessTopicPartition.topicPartition())
+      verify(replicaManager.disklessTopicView()).getDisklessLeaderEpoch(disklessTopicPartition.topicPartition())
     } finally {
       replicaManager.shutdown(checkpointHW = false)
     }
@@ -332,7 +362,7 @@ class ReplicaManagerInklessTest {
   def testClassicToDisklessStartOffsetDelegatesToMetadataView(): Unit = {
     val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(42L)
 
       assertEquals(42L, replicaManager.classicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
@@ -354,7 +384,7 @@ class ReplicaManagerInklessTest {
       List(disklessTopicPartition.topic()), controlPlane = Some(cp),
       topicIdMapping = Map(disklessTopicPartition.topic() -> disklessTopicPartition.topicId())))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       when(cp.repairDisklessLog(any())).thenReturn(java.util.List.of(new RepairDisklessLogResponse(true)))
       stubLeaderPartition(replicaManager, disklessTopicPartition)
@@ -374,7 +404,7 @@ class ReplicaManagerInklessTest {
     val cp = mock(classOf[ControlPlane])
     val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()), controlPlane = Some(cp)))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       // The control plane has no entry to repair (init never ran through the switch flow).
       when(cp.repairDisklessLog(any())).thenReturn(java.util.List.of(new RepairDisklessLogResponse(false)))
@@ -391,7 +421,7 @@ class ReplicaManagerInklessTest {
     val cp = mock(classOf[ControlPlane])
     val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()), controlPlane = Some(cp)))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       when(cp.repairDisklessLog(any())).thenThrow(new ControlPlaneException("boom"))
       stubLeaderPartition(replicaManager, disklessTopicPartition)
@@ -431,7 +461,7 @@ class ReplicaManagerInklessTest {
     val cp = mock(classOf[ControlPlane])
     val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()), controlPlane = Some(cp)))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       val mockPartition = mock(classOf[Partition])
       when(mockPartition.isLeader).thenReturn(false)
@@ -449,7 +479,7 @@ class ReplicaManagerInklessTest {
     val cp = mock(classOf[ControlPlane])
     val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()), controlPlane = Some(cp)))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       doReturn(None).when(replicaManager).onlinePartition(disklessTopicPartition.topicPartition())
 
@@ -681,7 +711,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val responseCallback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -720,9 +750,9 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(switchedPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(switchedPartition.topicPartition()))
         .thenReturn(100L)
 
       val responseCallback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -763,9 +793,9 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(switchedPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(switchedPartition.topicPartition()))
         .thenReturn(100L)
 
       val responseCallback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -806,7 +836,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val responseCallback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -842,7 +872,7 @@ class ReplicaManagerInklessTest {
     val appendHandlerCtor = mockConstruction(classOf[AppendHandler], appendHandlerCtorMockInitializer)
     val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       val responseCallback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -873,7 +903,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val partition = setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -904,7 +934,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val partition = setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -935,7 +965,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val classicPartition = setupHybridLeaderPartition(replicaManager, classicTopicPartition, localEndOffset = 50L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -968,7 +998,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val classicPartition = setupHybridLeaderPartition(replicaManager, classicTopicPartition, localEndOffset = 50L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -1005,7 +1035,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val partition = setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -1044,7 +1074,7 @@ class ReplicaManagerInklessTest {
     try {
       val partition = setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 200L)
       // switched topic: the classic prefix ends at 100, and we delete before 50 (inside that prefix).
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -1086,7 +1116,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val partition = setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -1489,7 +1519,7 @@ class ReplicaManagerInklessTest {
       disklessManagedReplicasEnabled = true,
     )
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
 
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
@@ -1519,7 +1549,7 @@ class ReplicaManagerInklessTest {
     )
     try {
       val partition = setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
       @volatile var responseData: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] = Map.empty
       replicaManager.deleteRecords(
@@ -1546,7 +1576,7 @@ class ReplicaManagerInklessTest {
     val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()), controlPlane = Some(cp), disklessManagedReplicasEnabled = true))
     try {
       // Given a diskless topic with classicToDisklessStartOffset = 100
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition())).thenReturn(100L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition())).thenReturn(100L)
 
       // Given a classic log read result for offsets below diskless start offset
       doReturn(Seq(disklessTopicPartition ->
@@ -1597,7 +1627,7 @@ class ReplicaManagerInklessTest {
       
     try {
       // Given a diskless topic with classicToDisklessStartOffset = 100
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition())).thenReturn(100L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition())).thenReturn(100L)
 
       // When fetching messages below the diskless start offset
       val fetchParams = new FetchParams(
@@ -1636,7 +1666,7 @@ class ReplicaManagerInklessTest {
 
     try {
       // Given a diskless topic with classicToDisklessStartOffset = -2 (switch pending)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       doReturn(Seq(disklessTopicPartition ->
@@ -1685,7 +1715,7 @@ class ReplicaManagerInklessTest {
 
     try {
       // Given a diskless topic with classicToDisklessStartOffset = -2 (switch pending)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val fetchParams = new FetchParams(
@@ -1743,7 +1773,7 @@ class ReplicaManagerInklessTest {
     ))
     try {
       // Given a full diskless topic with classicToDisklessStartOffset = -1 (never switched)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       val fetchParams = new FetchParams(
@@ -1805,7 +1835,7 @@ class ReplicaManagerInklessTest {
       disklessManagedReplicasEnabled = true,
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       val fetchParams = new FetchParams(
@@ -1841,7 +1871,7 @@ class ReplicaManagerInklessTest {
     // Given a topic partition that is fully diskless (never switched) and managed replicas are disabled
     val replicaManager = spy(createReplicaManager(List(disklessTopicPartition.topic()), disklessManagedReplicasEnabled = false))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       val fetchParams = new FetchParams(
         1, 1L, // follower fetch
@@ -1898,7 +1928,7 @@ class ReplicaManagerInklessTest {
     ))
     try {
       // Given a diskless topic with classicToDisklessStartOffset = 100
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition())).thenReturn(100L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition())).thenReturn(100L)
 
       // When fetching messages at the diskless start offset
       val fetchParams = new FetchParams(
@@ -2002,7 +2032,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLocalLeo(replicaManager, localLeo = 200L)
 
@@ -2061,7 +2091,7 @@ class ReplicaManagerInklessTest {
       crossTierLogStartCache = Some(cache),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLogStart(replicaManager, disklessTopicPartition, localLeo = 200L, isLeader = false)
 
@@ -2107,7 +2137,7 @@ class ReplicaManagerInklessTest {
       crossTierLogStartCache = Some(cache),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLogStart(replicaManager, disklessTopicPartition, localLeo = 200L, isLeader = false)
 
@@ -2162,7 +2192,7 @@ class ReplicaManagerInklessTest {
       crossTierLogStartCache = Some(cache),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLogStart(replicaManager, disklessTopicPartition, localLeo = 200L, isLeader = true)
 
@@ -2215,7 +2245,7 @@ class ReplicaManagerInklessTest {
       crossTierLogStartCache = Some(cache),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLogStart(replicaManager, disklessTopicPartition, localLeo = 200L, isLeader = false)
 
@@ -2267,7 +2297,7 @@ class ReplicaManagerInklessTest {
       crossTierLogStartCache = Some(cache),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLogStart(replicaManager, disklessTopicPartition, localLeo = 200L, isLeader = false)
 
@@ -2328,7 +2358,7 @@ class ReplicaManagerInklessTest {
     ))
     var localFileRecords: FileRecords = null
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       // Stub fetchOffsetSnapshot so DelayedFetch.tryComplete doesn't NPE if the request parks
       // on a build without the supplement.
@@ -2419,7 +2449,7 @@ class ReplicaManagerInklessTest {
     ))
     var localFileRecords: FileRecords = null
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       // Stub a partition whose local log ends at 100 and exposes a matching offset snapshot, so the
       // parked DelayedFetch.tryComplete can evaluate the partition's high watermark without NPE.
@@ -2516,7 +2546,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLocalLeo(replicaManager, localLeo = 100L)
 
@@ -2587,7 +2617,7 @@ class ReplicaManagerInklessTest {
       delayedFetchPurgatory = Some(fetchPurgatory),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       val mockPartition = mock(classOf[Partition])
       val mockLog = mock(classOf[UnifiedLog])
@@ -2670,7 +2700,7 @@ class ReplicaManagerInklessTest {
       delayedFetchPurgatory = Some(fetchPurgatory),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       val mockPartition = mock(classOf[Partition])
       val mockLog = mock(classOf[UnifiedLog])
@@ -2744,7 +2774,7 @@ class ReplicaManagerInklessTest {
     ))
     var localFileRecords: FileRecords = null
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       val mockPartition = mock(classOf[Partition])
       val mockLog = mock(classOf[UnifiedLog])
@@ -2808,7 +2838,7 @@ class ReplicaManagerInklessTest {
     ))
     var localFileRecords: FileRecords = null
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLocalLeo(replicaManager, localLeo = 100L)
 
@@ -2871,7 +2901,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       val mockPartition = mock(classOf[Partition])
       val mockLog = mock(classOf[UnifiedLog])
@@ -2936,7 +2966,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
 
       // Local log: logEndOffset=500, localLogStartOffset=200 (offsets 0-199 are in tiered storage)
@@ -3053,7 +3083,7 @@ class ReplicaManagerInklessTest {
       delayedFetchPurgatory = Some(fetchPurgatory),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(seal)
       // The fetch offset (480) is on an older segment than the local LEO, so the local read returns
       // a single sub-seal segment and the supplement is skipped. minBytes stays unmet, so the fetch
@@ -3175,7 +3205,7 @@ class ReplicaManagerInklessTest {
     ))
     var localFileRecords: FileRecords = null
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       val consolidatingPartition = mock(classOf[Partition])
       val consolidatingLog = mock(classOf[UnifiedLog])
@@ -3615,7 +3645,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubConsolidatingPartitionAsError(replicaManager, Errors.KAFKA_STORAGE_ERROR)
 
@@ -3660,7 +3690,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubConsolidatingPartitionAsError(replicaManager, Errors.NOT_LEADER_OR_FOLLOWER)
 
@@ -3705,7 +3735,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubConsolidatingPartitionAsError(replicaManager, Errors.UNKNOWN_TOPIC_OR_PARTITION)
 
@@ -3747,9 +3777,9 @@ class ReplicaManagerInklessTest {
       topicIdMapping = Map(disklessTopicPartition2.topic() -> disklessTopicPartition2.topicId()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition2.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition2.topicPartition()))
         .thenReturn(100L)
 
       doReturn(Left(Errors.KAFKA_STORAGE_ERROR)).when(replicaManager).getPartitionOrError(
@@ -3804,7 +3834,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(50L)
       stubConsolidatingPartitionWithLocalLeo(replicaManager, localLeo = 200L)
 
@@ -3869,7 +3899,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLocalLeo(replicaManager, localLeo = 100L)
 
@@ -3918,7 +3948,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubConsolidatingPartitionWithLocalLeo(
         replicaManager, localLeo = 100L, localHighWatermark = Some(50L))
@@ -3966,7 +3996,7 @@ class ReplicaManagerInklessTest {
     try {
       // Never switched, so the seal floor cannot decide the routing: only the follower's LEO
       // frontier keeps this read on the local log.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubConsolidatingPartitionWithLocalLeo(
         replicaManager, localLeo = 100L, localHighWatermark = Some(50L))
@@ -4026,7 +4056,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubConsolidatingPartitionWithLogStart(
         replicaManager, disklessTopicPartition, localLeo = 500L, isLeader = true,
@@ -4084,7 +4114,7 @@ class ReplicaManagerInklessTest {
       delayedFetchPurgatory = Some(fetchPurgatory),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       val mockPartition = mock(classOf[Partition])
       val mockLog = mock(classOf[UnifiedLog])
@@ -4153,7 +4183,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       stubConsolidatingPartitionWithLocalLeo(
         replicaManager, localLeo = 100L, localHighWatermark = Some(50L))
@@ -4221,7 +4251,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithoutLocalLog(replicaManager)
 
@@ -4261,7 +4291,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
 
       doReturn(Seq(disklessTopicPartition ->
@@ -4308,7 +4338,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       // Ensure we don't generate an additional invalid response from the consolidating-partition check.
       stubConsolidatingPartitionWithoutLocalLog(replicaManager)
@@ -4948,7 +4978,7 @@ class ReplicaManagerInklessTest {
     }
     try {
       setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val requestedEpochInfo = Seq(
@@ -4991,7 +5021,7 @@ class ReplicaManagerInklessTest {
     }
     try {
       setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
 
       val requestedEpochInfo = Seq(
@@ -5046,7 +5076,7 @@ class ReplicaManagerInklessTest {
         new LazyOffsetCheckpoints(replicaManager.highWatermarkCheckpoints.asJava),
         Some(disklessTopicPartition.topicId()))
       assertFalse(partition.isLeader)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
 
       val requestedEpochInfo = Seq(
@@ -5101,7 +5131,7 @@ class ReplicaManagerInklessTest {
         new LazyOffsetCheckpoints(replicaManager.highWatermarkCheckpoints.asJava),
         Some(disklessTopicPartition.topicId()))
       assertFalse(partition.isLeader)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(101L)
 
       val requestedEpochInfo = Seq(
@@ -5147,7 +5177,7 @@ class ReplicaManagerInklessTest {
     }
     try {
       setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
 
       val requestedEpochInfo = Seq(
@@ -5194,7 +5224,7 @@ class ReplicaManagerInklessTest {
     }
     try {
       setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
 
       val requestedEpochInfo = Seq(
@@ -5224,7 +5254,7 @@ class ReplicaManagerInklessTest {
     val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()), disklessManagedReplicasEnabled = true)
     try {
       setupHybridLeaderPartition(replicaManager, disklessTopicPartition, localEndOffset = 101L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(-3L)
 
       val requestedEpochInfo = Seq(
@@ -5254,7 +5284,7 @@ class ReplicaManagerInklessTest {
       disklessManagedReplicasEnabled = true,
       inklessSharedStateEnabled = false)
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       val requestedEpochInfo = Seq(
@@ -5294,7 +5324,7 @@ class ReplicaManagerInklessTest {
       fetchOffsetHandlerCtor.close()
     }
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       val requestedEpochInfo = Seq(
@@ -5346,7 +5376,7 @@ class ReplicaManagerInklessTest {
     // No switch — pure diskless: classicToDisklessStartOffset == -1. Combined with managed
     // replicas disabled, the router falls into case 1 and routes the lookup to the diskless
     // control plane.
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
     // Complete the diskless task with a successful offset before invoking fetchOffset so the
@@ -5400,7 +5430,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
     val resultHolder = new OffsetResultHolder(
@@ -5460,7 +5490,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val topics = Seq(new ListOffsetsTopic()
@@ -5508,7 +5538,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
     val resultHolder = new OffsetResultHolder(
@@ -5568,7 +5598,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val topics = Seq(new ListOffsetsTopic()
@@ -5622,7 +5652,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val topics = Seq(new ListOffsetsTopic()
@@ -5670,7 +5700,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Stub the local log so classicHasData is true (logStartOffset < classicToDisklessStartOffset).
@@ -5732,7 +5762,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val resultHolder = new OffsetResultHolder(
@@ -5786,7 +5816,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val resultHolder = new OffsetResultHolder(
@@ -5840,7 +5870,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Classic returns a real match at offset 42 for the requested timestamp.
@@ -5901,7 +5931,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Classic returns no match (empty result, no error).
@@ -5956,7 +5986,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Classic raises NotLeaderOrFollower (a real error). classicFetchOffset converts it to a
@@ -6031,7 +6061,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Classic returns a holder pointing at a pre-completed async remote-storage lookup.
@@ -6109,7 +6139,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val resultHolder = new OffsetResultHolder(
@@ -6192,7 +6222,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val resultHolder = new OffsetResultHolder(
@@ -6256,7 +6286,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Classic returns a successful timestamp/offset that the helper substitutes into the
@@ -6322,7 +6352,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     // Classic returns a holder that points at an async remote-storage task already resolved with a
@@ -6398,7 +6428,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val classicRemoteTaskFuture =
@@ -6467,7 +6497,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val classicRemoteTaskFuture =
@@ -6541,7 +6571,7 @@ class ReplicaManagerInklessTest {
     }
 
     try {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
       .thenReturn(100L)
 
     val classicRemoteTaskFuture =
@@ -6656,7 +6686,7 @@ class ReplicaManagerInklessTest {
       )
       try {
         val mockCfm = consolidationCtor.constructed().get(0)
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
           .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
         val oneReplica = Seq[Integer](1).asJava
         val delta = createLeaderDelta(
@@ -6707,7 +6737,7 @@ class ReplicaManagerInklessTest {
       )
       try {
         val mockCfm = consolidationCtor.constructed().get(0)
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
           .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
         val oneReplica = Seq[Integer](1).asJava
         val firstDelta = createLeaderDelta(
@@ -6721,8 +6751,8 @@ class ReplicaManagerInklessTest {
         replicaManager.applyDelta(firstDelta, imageFromTopics(firstDelta.apply()))
         verify(mockCfm, never()).addFetcherForPartitions(any())
 
-        when(replicaManager.inklessMetadataView().isConsolidatingDisklessTopic(topic)).thenReturn(true)
-        when(replicaManager.inklessMetadataView().isRemoteStorageEnabled(topic)).thenReturn(true)
+        when(replicaManager.disklessTopicView().isConsolidatingDisklessTopic(topic)).thenReturn(true)
+        when(replicaManager.disklessTopicView().isRemoteStorageEnabled(topic)).thenReturn(true)
 
         val bumpDelta = new TopicsDelta(firstDelta.apply())
         bumpDelta.replay(new PartitionChangeRecord()
@@ -6772,7 +6802,7 @@ class ReplicaManagerInklessTest {
       )
       try {
         val mockCfm = consolidationCtor.constructed().get(0)
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
           .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
         val delta = createFollowerDelta(
           disklessTopicPartition.topicId,
@@ -6862,7 +6892,7 @@ class ReplicaManagerInklessTest {
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 5L)
 
       // Mark the partition as fully switched with classicToDisklessStartOffset = 10.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
 
       // Apply a delta that makes this broker the leader (post-restart path).
       val delta = new TopicsDelta(TopicsImage.EMPTY)
@@ -6906,7 +6936,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 10L)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
 
       val delta = new TopicsDelta(TopicsImage.EMPTY)
       delta.replay(new TopicRecord().setName(topicName).setTopicId(topicId))
@@ -7189,7 +7219,7 @@ class ReplicaManagerInklessTest {
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 5L)
 
       // Mark the partition as fully switched with classicToDisklessStartOffset = 10.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
 
       // Apply the follower delta.
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
@@ -7228,7 +7258,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 10L)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
 
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
       replicaManager.applyDelta(delta, imageFromTopics(delta.apply()))
@@ -7260,7 +7290,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(
         replicaManager, tp, log, leo = sealOffset, hw = sealOffset)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
 
       val delta = disklessFollowerDelta(
         topicName, topicId, brokerId, leaderId, followerInIsr = false)
@@ -7298,7 +7328,7 @@ class ReplicaManagerInklessTest {
     try {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = sealOffset, hw = 5L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
 
       val followerDelta = disklessFollowerDelta(
         topicName,
@@ -7351,7 +7381,7 @@ class ReplicaManagerInklessTest {
     try {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 13L, hw = sealOffset)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
 
       val followerDelta = disklessFollowerDelta(
         topicName,
@@ -7403,8 +7433,8 @@ class ReplicaManagerInklessTest {
         val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
         populateConsolidatedLocalLogAndCheckpointedHwm(
           replicaManager, tp, log, sealOffset, leo, disklessLeaderEpoch, hw = sealOffset)
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
-        when(replicaManager.inklessMetadataView().getDisklessLeaderEpoch(tp)).thenReturn(disklessLeaderEpoch)
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+        when(replicaManager.disklessTopicView().getDisklessLeaderEpoch(tp)).thenReturn(disklessLeaderEpoch)
 
         val followerDelta = disklessFollowerDelta(
           topicName,
@@ -7448,8 +7478,8 @@ class ReplicaManagerInklessTest {
         val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
         populateConsolidatedLocalLogAndCheckpointedHwm(
           replicaManager, tp, log, sealOffset, leo, disklessLeaderEpoch, hw = sealOffset)
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
-        when(replicaManager.inklessMetadataView().getDisklessLeaderEpoch(tp)).thenReturn(disklessLeaderEpoch)
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+        when(replicaManager.disklessTopicView().getDisklessLeaderEpoch(tp)).thenReturn(disklessLeaderEpoch)
 
         val delta = new TopicsDelta(TopicsImage.EMPTY)
         delta.replay(new TopicRecord().setName(topicName).setTopicId(topicId))
@@ -7501,7 +7531,7 @@ class ReplicaManagerInklessTest {
     try {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 5L, hw = 5L)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
 
       val followerDelta = disklessFollowerDelta(
         topicName,
@@ -7549,7 +7579,7 @@ class ReplicaManagerInklessTest {
     ))
     try {
       assertTrue(replicaManager.logManager.getLog(tp).isEmpty)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
@@ -7586,7 +7616,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 5L)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
@@ -7629,7 +7659,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 5L)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       // First apply: leader == firstLeaderId, leaderEpoch == 0.
@@ -7691,7 +7721,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 10L, hw = 5L)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
@@ -8128,7 +8158,7 @@ class ReplicaManagerInklessTest {
       disklessManagedReplicasEnabled = true,
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
 
       // Below the seal offset the follower should still be able to catch up via classic.
@@ -8172,27 +8202,27 @@ class ReplicaManagerInklessTest {
       val tp = disklessTopicPartition.topicPartition()
 
       val classicTp = classicTopicPartition.topicPartition()
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(classicTp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(classicTp))
         .thenReturn(100L)
       assertFalse(replicaManager.isPartitionSwitchedFromClassicToDiskless(classicTopicPartition))
 
       // Diskless but never-switched partition: classicToDisklessStartOffset == -1.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       assertFalse(replicaManager.isPartitionSwitchedFromClassicToDiskless(disklessTopicPartition))
 
       // Switch pending: classicToDisklessStartOffset == -2 (sealed but offset not committed).
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       assertFalse(replicaManager.isPartitionSwitchedFromClassicToDiskless(disklessTopicPartition))
 
       // Switched (just sealed, seal at offset 0).
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(0L)
       assertTrue(replicaManager.isPartitionSwitchedFromClassicToDiskless(disklessTopicPartition))
 
       // Switched (seal at a later offset).
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(100L)
       assertTrue(replicaManager.isPartitionSwitchedFromClassicToDiskless(disklessTopicPartition))
     } finally {
@@ -8238,7 +8268,7 @@ class ReplicaManagerInklessTest {
       disklessRemoteStorageConsolidationEnabled = true,
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic())))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       assertFalse(replicaManager.isManagedConsolidatingDisklessPartition(disklessTopicPartition.topicPartition()))
     } finally {
@@ -8290,7 +8320,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic())))
     try {
       // Never switched, so only isManagedConsolidatingDisklessPartition can grant the override.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubNonLeaderPartitionForReplicaRead(replicaManager)
 
@@ -8311,7 +8341,7 @@ class ReplicaManagerInklessTest {
       disklessRemoteStorageConsolidationEnabled = false,
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic())))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       stubNonLeaderPartitionForReplicaRead(replicaManager)
 
@@ -8344,11 +8374,11 @@ class ReplicaManagerInklessTest {
 
       // A pending switch serves every offset locally and waits for its high watermark, so the same
       // lag carries no object-storage cost and must not be counted.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       assertEquals(0, replicaManager.consolidationHighWatermarkLagPartitionCount,
         "A switch-pending partition must not be counted")
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       assertEquals(1, replicaManager.consolidationHighWatermarkLagPartitionCount)
 
@@ -8373,7 +8403,7 @@ class ReplicaManagerInklessTest {
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic()),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       stubConsolidatingPartitionWithLocalLeo(replicaManager, localLeo = 10L)
       doReturn(Seq(disklessTopicPartition ->
@@ -8427,7 +8457,7 @@ class ReplicaManagerInklessTest {
       delayedFetchPurgatory = Some(fetchPurgatory),
     ))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(100L)
       // The real read path runs here: a fetch at 55 against a log that ends at 10 throws
       // OffsetOutOfRangeException, and the carve-out turns it into an empty successful read.
@@ -8500,23 +8530,23 @@ class ReplicaManagerInklessTest {
       val partition = replicaManager.createPartition(tp)
       partition.log = Some(log)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
       assertEquals(5L, replicaManager.disklessSwitchedPrefixLag,
         "The lag is the records below the seal this replica has not replicated")
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(7L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(7L)
       assertEquals(2L, replicaManager.disklessSwitchedPrefixLag,
         "It falls as the replica catches up, which is what shows progress")
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(5L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(5L)
       assertEquals(0L, replicaManager.disklessSwitchedPrefixLag,
         "A replica that reached the seal holds the whole prefix")
 
       // A consolidated suffix puts LEO past the seal; the lag must not go negative.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(3L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(3L)
       assertEquals(0L, replicaManager.disklessSwitchedPrefixLag)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       assertEquals(0L, replicaManager.disklessSwitchedPrefixLag,
         "A partition that never switched has no classic prefix to miss")
@@ -8537,7 +8567,7 @@ class ReplicaManagerInklessTest {
       // Never-switched diskless topic: no local log on this broker AND no committed
       // classicToDisklessStartOffset. Without an explicit stub Mockito would return
       // 0L which means "switched, seal at offset 0" -- not what this test models.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       assertTrue(replicaManager.logManager.getLog(tp).isEmpty)
 
@@ -8585,7 +8615,7 @@ class ReplicaManagerInklessTest {
       assertTrue(replicaManager.logManager.getLog(tp).isEmpty)
       assertEquals(new HostedPartition.None[Partition], replicaManager.getPartition(tp))
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(10L)
 
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
       replicaManager.applyDelta(delta, imageFromTopics(delta.apply()))
@@ -8634,7 +8664,7 @@ class ReplicaManagerInklessTest {
     ))
     try {
       assertTrue(replicaManager.logManager.getLog(tp).isEmpty)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val delta = disklessFollowerDelta(topicName, topicId, brokerId, leaderId)
@@ -8793,7 +8823,7 @@ class ReplicaManagerInklessTest {
     log.appendAsLeader(MemoryRecords.withRecords(0L, Compression.NONE, 0, records: _*), 0)
     log.updateHighWatermark(sealOffset)
 
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(topicIdPartition.topicPartition()))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(topicIdPartition.topicPartition()))
       .thenReturn(sealOffset)
     partition
   }
@@ -8937,7 +8967,7 @@ class ReplicaManagerInklessTest {
       disklessEngine = if (engineClassName.isDefined) {
         Some(DisklessEngines.load(config.originals).createBrokerEngine(testContext(util.Map.of(), time.scheduler)))
       } else nativeEngine,
-      inklessMetadataView = Some(inklessMetadata),
+      disklessTopicView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,
       delayedFetchPurgatoryParam = delayedFetchPurgatory,
     ) {
@@ -9229,7 +9259,7 @@ class ReplicaManagerInklessTest {
       disklessRemoteStorageConsolidationEnabled = true,
       consolidatingDisklessTopics = Set(disklessTopicPartition.topic())))
     try {
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(disklessTopicPartition.topicPartition()))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       // Share fetch sets CONSUMER_REPLICA_ID, so only the shareFetchRequest flag separates it from an
       // older consumer once clientMetadata is absent.
@@ -9296,7 +9326,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 13L, hw = sealOffset)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       val pendingDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -9318,7 +9348,7 @@ class ReplicaManagerInklessTest {
       replicaManager.applyDelta(pendingDelta, pendingImage)
 
       clearInvocations(mockFetcherManager)
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
 
       val sealDelta = new TopicsDelta(pendingImage.topics())
       val sealRecord = new PartitionChangeRecord()
@@ -9367,7 +9397,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = 13L, hw = sealOffset)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
 
       // First delta already carries a committed seal (>= 0). This still truncates because the
       // partition is not consolidating, so the local suffix cannot be valid diskless materialization.
@@ -9446,7 +9476,7 @@ class ReplicaManagerInklessTest {
       val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
       populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = localLeo, hw = localLeo)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
       // Bring the partition online as a sealed leader with the switch still PENDING.
@@ -9473,7 +9503,7 @@ class ReplicaManagerInklessTest {
       assertEquals(localLeo, replicaManager.localLogOrException(tp).logEndOffset)
 
       // Commit the seal at an offset above the leader's local LEO.
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
       val sealDelta = new TopicsDelta(pendingImage.topics())
       val sealRecord = new PartitionChangeRecord()
         .setTopicId(topicId)
@@ -9630,7 +9660,7 @@ class ReplicaManagerInklessTest {
     val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
     populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = localLeo, hw = localLeo)
 
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
       .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
     val pendingDelta = new TopicsDelta(TopicsImage.EMPTY)
@@ -9664,7 +9694,7 @@ class ReplicaManagerInklessTest {
   private def commitSealDelta(
       replicaManager: ReplicaManager, pendingImage: MetadataImage,
       topicId: Uuid, tp: TopicPartition, brokerId: Int, sealOffset: Long): Unit = {
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
     val sealDelta = new TopicsDelta(pendingImage.topics())
     val sealRecord = new PartitionChangeRecord()
       .setTopicId(topicId)
@@ -9706,7 +9736,7 @@ class ReplicaManagerInklessTest {
       try {
         val mockCfm = consolidationCtor.constructed().get(0)
         // Seal committed at 100, but the freshly created follower log is empty (LEO 0 < seal).
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
           .thenReturn(100L)
         val delta = createFollowerDelta(
           disklessTopicPartition.topicId,
@@ -9745,15 +9775,15 @@ class ReplicaManagerInklessTest {
       when(partition.log).thenReturn(Some(log))
       replicaManager.addOnlinePartition(topicPartition, partition)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(topicPartition)).thenReturn(100L)
-      when(replicaManager.inklessMetadataView().isReplicaInIsr(topicPartition, 1)).thenReturn(false)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(topicPartition)).thenReturn(100L)
+      when(replicaManager.disklessTopicView().isReplicaInIsr(topicPartition, 1)).thenReturn(false)
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(topicPartition))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(topicPartition))
         .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
       assertEquals(0, replicaManager.disklessSwitchedReplicasOutsideIsrCount,
         "a pending switch has no committed seal for ISR recovery")
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(topicPartition)).thenReturn(100L)
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(topicPartition)).thenReturn(100L)
       when(log.logEndOffset).thenReturn(99L)
       assertEquals(0, replicaManager.disklessSwitchedReplicasOutsideIsrCount,
         "a replica below the seal is still catching up")
@@ -9762,13 +9792,13 @@ class ReplicaManagerInklessTest {
       assertEquals(1, replicaManager.disklessSwitchedReplicasOutsideIsrCount,
         "a replica at the seal and outside ISR is awaiting readmission")
 
-      when(replicaManager.inklessMetadataView().isReplicaInIsr(topicPartition, 1)).thenReturn(true)
+      when(replicaManager.disklessTopicView().isReplicaInIsr(topicPartition, 1)).thenReturn(true)
       assertEquals(0, replicaManager.disklessSwitchedReplicasOutsideIsrCount,
         "ISR admission ends the recovery wait")
 
-      when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(topicPartition))
+      when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(topicPartition))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-      when(replicaManager.inklessMetadataView().isReplicaInIsr(topicPartition, 1)).thenReturn(false)
+      when(replicaManager.disklessTopicView().isReplicaInIsr(topicPartition, 1)).thenReturn(false)
       assertEquals(0, replicaManager.disklessSwitchedReplicasOutsideIsrCount,
         "born-diskless replicas do not have a classic-prefix recovery wait")
     } finally {
@@ -9919,7 +9949,7 @@ class ReplicaManagerInklessTest {
         val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
         populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo = sealOffset, hw = sealOffset)
 
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
           .thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
         // --- delta 1: bring the partition online as a (still pending) leader on this broker ---
@@ -9967,7 +9997,7 @@ class ReplicaManagerInklessTest {
 
         // --- delta 3: seal commit (PENDING -> committed seal), no leader-epoch bump ---
         clearInvocations(mockCfm)
-        when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
+        when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp)).thenReturn(sealOffset)
         val sealDelta = new TopicsDelta(pendingImage.topics())
         val sealRecord = new PartitionChangeRecord()
           .setTopicId(topicId)

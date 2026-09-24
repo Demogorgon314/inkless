@@ -193,7 +193,7 @@ class ConsolidationFetcherThreadTest {
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       v
     }
-    when(replicaManager.inklessMetadataView()).thenReturn(view)
+    when(replicaManager.disklessTopicView()).thenReturn(view)
     when(replicaManager.replicaFetcherManager).thenReturn(mock(classOf[ReplicaFetcherManager]))
     replicaManager
   }

@@ -17,10 +17,8 @@
 
 package kafka.server
 
-import io.aiven.inkless.common.SharedState
-import io.aiven.inkless.config.InklessConfig
 import io.aiven.inkless.engine.DisklessRequestContext
-import io.aiven.inkless.control_plane.MetadataView
+import kafka.server.metadata.DisklessTopicView
 import kafka.cluster.Partition
 import kafka.coordinator.transaction.{InitProducerIdResult, TransactionCoordinator}
 import kafka.network.RequestChannel
@@ -175,7 +173,7 @@ class KafkaApisTest extends Logging {
     configRepository: ConfigRepository = new MockConfigRepository(),
     overrideProperties: Map[String, String] = Map.empty,
     featureVersions: Seq[FeatureVersion] = Seq.empty,
-    inklessSharedState: Option[SharedState] = None,
+    disklessTopicView: Option[DisklessTopicView] = None,
     autoTopicCreationManager: Option[AutoTopicCreationManager] = None
   ): KafkaApis = {
 
@@ -219,7 +217,7 @@ class KafkaApisTest extends Logging {
       apiVersionManager = apiVersionManager,
       clientMetricsManager = clientMetricsManager,
       groupConfigManager = groupConfigManager,
-      disklessMetadata = inklessSharedState.map(_.metadata()))
+      disklessMetadata = disklessTopicView)
   }
 
   private def setupFeatures(featureVersions: Seq[FeatureVersion]): Unit = {
@@ -1530,7 +1528,7 @@ class KafkaApisTest extends Logging {
       ArgumentMatchers.eq(requestLocal.bufferSupplier)
     )).thenReturn(CompletableFuture.completedFuture(coordinatorResponse))
 
-    val kafkaApis = createKafkaApis(inklessSharedState = Some(createInklessSharedStateWithTopic(topic)))
+    val kafkaApis = createKafkaApis(disklessTopicView = Some(createDisklessTopicView(topic)))
     try {
       kafkaApis.handleTxnOffsetCommitRequest(request, requestLocal)
 
@@ -3199,7 +3197,7 @@ class KafkaApisTest extends Logging {
 
     when(clientRequestQuotaManager.maybeRecordAndGetThrottleTimeMs(any[RequestChannel.Request](),
       any[Long])).thenReturn(0)
-    val kafkaApis = createKafkaApis(inklessSharedState = Some(createInklessSharedStateWithTopic(topic)))
+    val kafkaApis = createKafkaApis(disklessTopicView = Some(createDisklessTopicView(topic)))
     try {
       kafkaApis.handleAddPartitionsToTxnRequest(request, RequestLocal.withThreadConfinedCaching)
 
@@ -3703,7 +3701,7 @@ class KafkaApisTest extends Logging {
     val expectedErrors = Map(topicPartition -> Errors.INVALID_TOPIC_EXCEPTION).asJava
     val capturedResponse: ArgumentCaptor[WriteTxnMarkersResponse] = ArgumentCaptor.forClass(classOf[WriteTxnMarkersResponse])
 
-    val kafkaApis = createKafkaApis(inklessSharedState = Some(createInklessSharedStateWithTopic(topic)))
+    val kafkaApis = createKafkaApis(disklessTopicView = Some(createDisklessTopicView(topic)))
     kafkaApis.handleWriteTxnMarkersRequest(request, RequestLocal.withThreadConfinedCaching)
 
     verify(requestChannel).sendResponse(
@@ -3715,13 +3713,10 @@ class KafkaApisTest extends Logging {
     assertEquals(expectedErrors, markersResponse.errorsByProducerId.get(1L))
   }
 
-  private def createInklessSharedStateWithTopic(inklessTopic: String): SharedState = {
-    val metadataView = mock(classOf[MetadataView])
-    when(metadataView.isDisklessTopic(ArgumentMatchers.eq(inklessTopic))).thenReturn(true)
-    val sharedState = mock(classOf[SharedState])
-    when(sharedState.metadata()).thenReturn(metadataView)
-    when(sharedState.config()).thenReturn(new InklessConfig(util.Map.of[String, AnyRef]()))
-    sharedState
+  private def createDisklessTopicView(disklessTopic: String): DisklessTopicView = {
+    val topicView = mock(classOf[DisklessTopicView])
+    when(topicView.isDisklessTopic(ArgumentMatchers.eq(disklessTopic))).thenReturn(true)
+    topicView
   }
 
   @Test

@@ -52,8 +52,8 @@ final class DisklessClassLoaderContext {
      * and the first {@code close()} releases the class-loader lease.
      *
      * <p>The proxy exposes every SPI interface the delegate implements, so callers can distinguish
-     * lifecycle contracts without seeing the plugin class. Extensions returned by the delegate get
-     * the same class-loader context but do not own the lease.
+     * lifecycle contracts without seeing the plugin class. SPI components returned by the delegate,
+     * such as extensions and placement, get the same class-loader context but do not own the lease.
      *
      * <p>The lease is released even when the delegate fails to close: a component that cannot close
      * cleanly must not pin its runtime for the lifetime of the process. Subsequent {@code close()}
@@ -81,9 +81,13 @@ final class DisklessClassLoaderContext {
         return Proxy.newProxyInstance(DisklessEngine.class.getClassLoader(), interfaces.toArray(Class<?>[]::new), handler);
     }
 
+    private static boolean isSpiInterface(Class<?> type) {
+        return type.isInterface() && type.getPackageName().equals(SPI_PACKAGE);
+    }
+
     private static void collectSpiInterfaces(Class<?> type, Set<Class<?>> interfaces) {
         for (Class<?> candidate : type.getInterfaces()) {
-            if (candidate.getPackageName().equals(SPI_PACKAGE)) {
+            if (isSpiInterface(candidate)) {
                 interfaces.add(candidate);
             }
             collectSpiInterfaces(candidate, interfaces);
@@ -147,9 +151,16 @@ final class DisklessClassLoaderContext {
             }
             Object result = call(classLoader, () -> DisklessClassLoaderContext.invoke(method, delegate, args));
             if (result instanceof Optional<?> extension && extension.isPresent()) {
-                return Optional.of(proxy(extension.get(), new ContextHandler(extension.get(), classLoader, null)));
+                return Optional.of(borrowed(extension.get()));
+            }
+            if (result != null && isSpiInterface(method.getReturnType())) {
+                return borrowed(result);
             }
             return result;
+        }
+
+        private Object borrowed(Object component) {
+            return proxy(component, new ContextHandler(component, classLoader, null));
         }
     }
 

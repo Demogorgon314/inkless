@@ -103,7 +103,7 @@ class DisklessSwitchInvariantsTest {
     val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
     populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, localLeo, checkpointHw)
 
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
       .thenReturn(sealOffset)
 
     val delta = leaderDelta(topicName, topicId)
@@ -141,7 +141,7 @@ class DisklessSwitchInvariantsTest {
     val log = replicaManager.logManager.getOrCreateLog(tp, isNew = true, topicId = Optional.of(topicId))
     populateLocalLogAtLeoAndCheckpointedHwm(replicaManager, tp, log, leo, checkpointHw)
 
-    when(replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(tp))
+    when(replicaManager.disklessTopicView().getClassicToDisklessStartOffset(tp))
       .thenReturn(sealOffset)
 
     val delta = followerDelta(topicName, topicId, leaderId)
@@ -194,7 +194,7 @@ class DisklessSwitchInvariantsTest {
   }
 
   private def addClassicToDisklessStartOffsetIfPresent(topicName: String, partitionRecord: PartitionRecord): Unit = {
-    val sealOffset = replicaManager.inklessMetadataView().getClassicToDisklessStartOffset(
+    val sealOffset = replicaManager.disklessTopicView().getClassicToDisklessStartOffset(
       new TopicPartition(topicName, partitionRecord.partitionId()))
     if (sealOffset != PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET) {
       partitionRecord.unknownTaggedFields().add(
@@ -251,7 +251,7 @@ class DisklessSwitchInvariantsTest {
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = mock(classOf[AlterPartitionManager]),
       disklessEngine = Some(engine),
-      inklessMetadataView = Some(inklessMetadata),
+      disklessTopicView = Some(inklessMetadata),
     ) {
       override protected def createReplicaFetcherManager(
         metrics: Metrics,

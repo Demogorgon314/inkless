@@ -52,6 +52,7 @@ import io.aiven.inkless.engine.DisklessTopicLifecycle;
 import io.aiven.inkless.engine.FetchProbing;
 import io.aiven.inkless.engine.LogTiering;
 import io.aiven.inkless.engine.LogTransition;
+import io.aiven.inkless.engine.PartitionPlacement;
 import io.aiven.inkless.engine.RecordDeletion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -124,7 +125,8 @@ public class DisklessEnginesTest {
 
     @Test
     public void everyExtensionOperationUsesAndRestoresPluginContext() throws Exception {
-        for (Class<?> extension : List.of(FetchProbing.class, RecordDeletion.class, LogTiering.class, LogTransition.class)) {
+        for (Class<?> extension : List.of(PartitionPlacement.class, FetchProbing.class, RecordDeletion.class,
+                LogTiering.class, LogTransition.class)) {
             for (var method : extension.getMethods()) {
                 assertOperationUsesPluginContext(extension, method);
             }
@@ -147,6 +149,10 @@ public class DisklessEnginesTest {
             Object target;
             if (type == DisklessEngine.class) {
                 target = DisklessClassLoaderContext.leased(DisklessEngine.class, (DisklessEngine) delegate, lease);
+            } else if (type == PartitionPlacement.class) {
+                when(engine.placement()).thenReturn((PartitionPlacement) delegate);
+                target = DisklessClassLoaderContext.leased(DisklessEngine.class, engine, lease).placement();
+                assertNotSame(delegate, target);
             } else {
                 when(engine.fetchProbing()).thenReturn(Optional.of(delegate).filter(FetchProbing.class::isInstance).map(FetchProbing.class::cast));
                 when(engine.recordDeletion()).thenReturn(Optional.of(delegate).filter(RecordDeletion.class::isInstance).map(RecordDeletion.class::cast));
@@ -196,6 +202,24 @@ public class DisklessEnginesTest {
                 assertInstanceOf(DisklessEngine.class, loaded);
             }
             verify(engine).close();
+        }
+    }
+
+    @Test
+    public void providerIsSharedByComponentsAndClosesOnce() throws Exception {
+        var context = testContext(Map.of(), mock(Scheduler.class));
+        try (var construction = mockConstruction(TestProvider.class, (provider, ignored) ->
+            when(provider.createBrokerEngine(any())).thenAnswer(invocation -> mock(DisklessEngine.class)))) {
+            var provider = DisklessEngines.load(Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName()));
+            var first = provider.createBrokerEngine(context);
+            var second = provider.createBrokerEngine(context);
+            assertEquals(1, construction.constructed().size());
+            first.close();
+            second.close();
+            provider.close();
+            provider.close();
+            verify(construction.constructed().get(0)).close();
+            assertThrows(IllegalStateException.class, () -> provider.createBrokerEngine(context));
         }
     }
 
@@ -253,6 +277,11 @@ public class DisklessEnginesTest {
 
     /** Public no-argument engine used by loader and broker routing tests. */
     public static class TestEngine implements DisklessEngine {
+        @Override
+        public PartitionPlacement placement() {
+            throw new UnsupportedOperationException("Test must supply placement behavior");
+        }
+
         @Override
         public CompletableFuture<Map<TopicIdPartition, PartitionResponse>> append(
             Map<TopicIdPartition, MemoryRecords> records, RequestLocal requestLocal, DisklessRequestContext requestContext) {

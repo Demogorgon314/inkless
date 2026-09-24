@@ -20,15 +20,23 @@ package io.aiven.inkless.engine;
  * Entry point of a diskless storage implementation. Kafka creates the broker and controller
  * components through this interface for both the built-in and isolated implementations.
  *
- * <p>Providers have no owned resources; ownership of each component transfers to its caller.
- * If construction fails, the provider closes every resource it opened. No partially initialized
- * broker engine is constructed on a controller.
+ * <p>Kafka creates one provider per process and shares it between the broker and controller roles,
+ * so the provider may own resources that its components share, such as metadata-store clients.
+ * Each component owns its own resources and Kafka closes it independently. Kafka closes the provider
+ * after it closes every component the provider created. If construction fails, the provider closes
+ * every resource that the failed call opened. No partially initialized broker engine is constructed
+ * on a controller.
  *
  * <p>Isolated providers run factory and component calls with the plugin context class loader.
  * They must preserve that context for asynchronous tasks submitted to executors they do not own.
  */
-public interface DisklessStorageProvider {
+public interface DisklessStorageProvider extends AutoCloseable {
     DisklessEngine createBrokerEngine(DisklessEngineContext context) throws Exception;
 
     DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) throws Exception;
+
+    /** Releases resources shared by the provider's components. */
+    @Override
+    default void close() throws Exception {
+    }
 }

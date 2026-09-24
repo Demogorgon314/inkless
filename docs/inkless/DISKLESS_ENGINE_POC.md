@@ -77,17 +77,18 @@ and closes handlers before shared state.
 | Boundary | Contract |
 | --- | --- |
 | `Appender`, `Fetcher`, `OffsetReader` | Required asynchronous record operations; Kafka retains protocol routing and response handling. |
+| `PartitionPlacement` | Required broker routing for diskless partitions. Kafka rewrites Metadata and DescribeTopicPartitions responses with it and keeps KRaft leader epochs. |
 | `start`, `close` | Engine owns maintenance tasks and resources; startup runs once on the context scheduler, and close is idempotent. |
-| `onTopicDeleted`, `onTopicConfigChanged` | Metadata callbacks on the publisher thread. They return promptly and defer remote I/O to engine threads. |
+| `onTopicDeleted`, `onTopicConfigChanged`, `onBrokerLogDefaultsChanged` | Metadata and dynamic-configuration callbacks. They return promptly and defer remote I/O to engine threads. |
 | `FetchProbing` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
 | `RecordDeletion` | Optional logical deletion keyed by topic ID. Kafka rejects DeleteRecords before touching a local-log leg when the extension is absent. |
 | `LogTiering` | Optional copying into Kafka's log tiers, cross-tier start offsets, and reclamation of durably copied records. Logical deletion and copy reclamation are distinct operations. |
 | `LogTransition` | Optional initialization and repair after Kafka commits a classic-to-diskless transition. Kafka owns coordination and retries. |
 | `DisklessTopicLifecycle` | Separate controller service for topic creation, expansion, configuration, deletion, and reconciliation. |
 
-`DisklessEngine` extends only `Appender`, `Fetcher`, and `OffsetReader`. A new
-implementation that provides these three operations and a topic lifecycle can
-serve produce, fetch, and ListOffsets. Every other feature is an extension
+`DisklessEngine` extends only `Appender`, `Fetcher`, and `OffsetReader`, and
+requires `placement()`. A new implementation that provides these operations, a
+placement, and a topic lifecycle can serve produce, fetch, and ListOffsets. Every other feature is an extension
 interface returned by an accessor such as `logTiering()`. The returned object is
 the capability itself: Kafka reads each accessor once after construction and
 starts the dependent workflows only when the extension is present. There is no
@@ -111,9 +112,34 @@ Kafka coordination paths; this refactor does not make that claim. Ursa exposes
 no extensions. Its own compaction does not implement the Kafka log tiering
 protocol.
 
-`ReplicaManager` retains `InklessMetadataView` for topic routing, leader epochs,
-and cross-tier offset decisions. These broker responsibilities apply regardless
-of the selected storage engine.
+## Kafka-owned metadata and shared resources
+
+Kafka routing reads diskless topic state through `DisklessTopicView`, a
+Kafka-owned interface that `KafkaDisklessTopicView` implements over the KRaft
+metadata cache. `ReplicaManager`, `KafkaApis`, `DisklessMetadataRewriter`, the
+offset router, consolidation, the DeleteRecords forwarder, and `ControllerApis`
+use it for topic routing, leader epochs, seals, and cross-tier offset decisions.
+These broker responsibilities apply regardless of the selected storage engine,
+and none of them depends on an Inkless type.
+
+`InklessMetadataView` extends the Kafka view with Inkless's own `MetadataView`
+contract and its cached per-topic `LogConfig`. Only the built-in provider
+receives it. The built-in engine keeps that cache current from
+`onTopicConfigChanged`, `onTopicDeleted`, and `onBrokerLogDefaultsChanged`; Kafka's
+topic configuration handler, metadata publisher, and dynamic broker
+configuration no longer reach into it. Kafka calls `onBrokerLogDefaultsChanged`
+after a dynamic change to broker log defaults, which also lets an external engine
+refresh defaults it applied to open partitions.
+
+`SharedServer` holds one `DisklessStorageProvider` for the process and shares it
+between the broker and controller roles. `DisklessEngineFactory` selects it: an
+isolated provider when `diskless.engine.class.name` is set, and
+`InklessStorageProvider` otherwise. The built-in provider creates and owns the
+Inkless control plane; the broker attaches its Inkless-specific services with
+`withBrokerServices`, which returns a view that borrows the control plane.
+`SharedServer` closes the provider after both roles have closed their
+components. Kafka therefore no longer creates or closes any Inkless resource
+itself.
 
 `DisklessEngineContext` supplies provider settings, broker identity, time, the
 broker scheduler, current broker log defaults, and a supplier of immutable
@@ -132,11 +158,34 @@ reconciliation also resolve by UUID. A same-name replacement cannot supply the
 old partition's configuration. A snapshot does not fence subsequent metadata
 changes; the existing storage deletion fence still protects deleted identities.
 
+## Partition placement
+
+No KRaft leader serves a diskless partition, so each engine decides which brokers
+clients contact. The decision encodes the engine's write model, which is why it
+belongs to the engine and not to Kafka. Kafka owns the protocol side:
+`DisklessMetadataRewriter` collects every diskless partition in a Metadata or
+DescribeTopicPartitions response, calls `PartitionPlacement.place` once with the
+client's `DisklessRequestContext` and the alive brokers of the client's listener,
+and writes the leader, replicas, ISR, and offline replicas back. It clears
+eligible leader replicas, keeps the KRaft leader epoch so clients still fence on
+it, and keeps the KRaft partition error when placement finds no broker.
+
+The engine derives any client zone from the request context. Placement and append
+receive the same context, so an engine applies one zone rule to both routing and
+write acceptance. The two providers use different rules:
+
+| Provider | Placement | Reason |
+| --- | --- | --- |
+| Inkless (`InklessPartitionPlacement`) | Hash within the client AZ from `diskless_az=` or the listener map; managed replicas prefer same-AZ replicas, and tiered topics stay on replicas. | Every broker accepts writes through the shared control plane. |
+| Ursa (`UrsaPartitionPlacement`) | One owner broker per partition by hash over all alive brokers, independent of the client zone. | Ursa leases each partition log to one writer and keeps producer state in UFK's single `no-zone` namespace. |
+
+Zone-local Ursa owners require zone-scoped producer state and owner
+reconciliation. Those changes and the placement rule change together inside the
+Ursa provider; Kafka needs no change. The Inkless placement owns its client-AZ
+metrics, and the native engine closes it.
+
 The Ursa adapter translates append, fetch, and offset lookup and invokes the
-copied UFK implementation. Append receives an immutable `DisklessRequestContext`
-with client ID and listener. Producer state retains UFK's stable
-`no-zone` namespace: client routing hints alone do not establish zone ownership.
-Adding zone-based producer identity requires coordinated routing and owner reconciliation.
+copied UFK implementation.
 
 Kafka's `DisklessOffsetJob` owns batching, cancellation, and purgatory conversion.
 It resolves immutable topic IDs before dispatching a batch to `listOffsets`.
@@ -156,8 +205,9 @@ the engine choose a dedicated background reader. Kafka calls it only while it
 runs consolidation fetchers.
 
 The loader establishes the plugin context classloader for every engine call. The
-proxy exposes every SPI interface the component implements, and extensions
-returned by accessors run with the same context. The context scheduler runs
+proxy exposes every SPI interface the component implements, and SPI components
+it returns, such as extensions and the placement, run with the same context.
+The context scheduler runs
 every task with the plugin context and rejects `startup`, `shutdown`, and
 `resizeThreadPool`, because Kafka owns the scheduler lifecycle. Providers must
 preserve the context when submitting work to other executors they do not own;
@@ -170,10 +220,10 @@ combines classic and diskless results and applies its response handling.
 
 ## Controller lifecycle shared by both providers
 
-Both providers implement `DisklessTopicLifecycle`. The controller factory owns
-the provider lifetime, and controller APIs depend only on the lifecycle SPI.
-The native service borrows the shared control plane; it must not close a client
-that the broker role may still use.
+Both providers implement `DisklessTopicLifecycle`. The controller creates its
+lifecycle from the process-scoped provider, and controller APIs depend only on
+the lifecycle SPI. The native lifecycle borrows the provider's control plane; it
+must not close a client that the broker role may still use.
 
 Each lifecycle implements exactly one typed contract. The controller factory
 selects the request service or reconciler once; ControllerApis accepts only
@@ -264,10 +314,13 @@ are reclaimed with the classloader instead of being closed eagerly: gRPC may
 still load classes during asynchronous shutdown after its client returns from
 `close()`.
 
-The stateless provider has separate factory methods for a fully initialized
-broker engine and controller lifecycle. Each returned component owns its resources;
-Kafka closes it independently, releasing its classloader lease. A failed factory
-call must close resources it opened. No partially initialized broker engine is
+The process-scoped provider has separate factory methods for a fully initialized
+broker engine and controller lifecycle. The loader instantiates an isolated
+provider once and holds a runtime lease until the provider closes. Each returned
+component owns its resources and its own lease; Kafka closes it independently.
+Kafka closes the provider after its components, so a provider may own clients
+that its components share. The Ursa provider does not share resources yet. A
+failed factory call must close resources it opened. No partially initialized broker engine is
 constructed on the controller. Only the active controller reconciles committed metadata. The copied
 reconciler retains bounded concurrency, retries, metadata revisions, and orphan
 recovery; its sweep interval is ten minutes. Retriable backend failures are

@@ -354,9 +354,9 @@ class BrokerServer(
        */
       val defaultActionQueue = new DelayedActionQueue
 
-      val inklessMetadataView = new InklessMetadataView(metadataCache, () => config.extractLogConfigMap)
-      maybeDisklessEngine = DisklessEngineFactory.create(config, time, kafkaScheduler, metadataCache, inklessMetadataView,
-        brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.inklessControlPlane)
+      val disklessTopicView = new KafkaDisklessTopicView(metadataCache)
+      maybeDisklessEngine = DisklessEngineFactory.create(config, time, kafkaScheduler, metadataCache,
+        brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.disklessStorageProvider)
       val logTransition = maybeDisklessEngine.flatMap(_.logTransition().toScala)
       val logTiering = maybeDisklessEngine.flatMap(_.logTiering().toScala)
 
@@ -399,7 +399,7 @@ class BrokerServer(
         directoryEventHandler = directoryEventHandler,
         defaultActionQueue = defaultActionQueue,
         disklessEngine = maybeDisklessEngine,
-        inklessMetadataView = Some(inklessMetadataView),
+        disklessTopicView = Some(disklessTopicView),
         initDisklessLogManager = maybeInitDisklessLogManager
       )
 
@@ -410,7 +410,7 @@ class BrokerServer(
       maybeDisklessDeleteRecordsForwarder = Option.when(logTiering.isDefined || logTransition.isDefined) {
         val forwarderLogContext = new LogContext(s"[DisklessDeleteRecordsForwarder broker=${config.brokerId}]")
         val forwarderNetworkClient = NetworkUtils.buildNetworkClient("DisklessDeleteRecordsForwarder", config, metrics, time, forwarderLogContext)
-        val forwarder = new DisklessDeleteRecordsForwarder(config, forwarderNetworkClient, metadataCache, inklessMetadataView, time)
+        val forwarder = new DisklessDeleteRecordsForwarder(config, forwarderNetworkClient, metadataCache, disklessTopicView, time)
         forwarder.start()
         forwarder
       }
@@ -532,8 +532,10 @@ class BrokerServer(
         apiVersionManager = apiVersionManager,
         clientMetricsManager = clientMetricsManager,
         groupConfigManager = groupConfigManager,
-        disklessMetadata = maybeDisklessEngine.map(_ => inklessMetadataView),
-        disklessDeleteRecordsForwarder = maybeDisklessDeleteRecordsForwarder)
+        disklessMetadata = maybeDisklessEngine.map(_ => disklessTopicView),
+        disklessDeleteRecordsForwarder = maybeDisklessDeleteRecordsForwarder,
+        disklessMetadataRewriter = maybeDisklessEngine.map(engine =>
+          new DisklessMetadataRewriter(disklessTopicView, engine.placement())))
 
       dataPlaneRequestHandlerPool = sharedServer.requestHandlerPoolFactory.createPool(
         config.nodeId,
