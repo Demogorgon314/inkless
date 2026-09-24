@@ -30,13 +30,12 @@ import java.util.concurrent.CompletableFuture;
  *
  * <p>The implementation owns its catalog schema and metadata-store layout. Kafka supplies only
  * topic identity, partition count, and topic configuration. Every operation is idempotent: the
- * controller retries it either through the request path or through metadata reconciliation, as
- * expressed by separate request-driven and metadata-driven contracts.
+ * controller retries it either through the request path or through metadata reconciliation.
+ *
+ * <p>Each lifecycle implements exactly one of the {@link RequestDriven} and {@link MetadataDriven}
+ * contracts. They order storage work differently relative to KRaft, so they share no operations.
  */
 public interface DisklessTopicLifecycle extends AutoCloseable {
-    /** Deletes one immutable topic incarnation; a same-name replacement has a different ID. */
-    CompletableFuture<Void> deleteTopic(String topicName, Uuid topicId);
-
     /** Preserves request ordering: provision after KRaft creation, delete before KRaft deletion. */
     interface RequestDriven extends DisklessTopicLifecycle {
         CompletableFuture<Void> ensurePartitions(Set<PartitionRange> partitions);
@@ -44,6 +43,12 @@ public interface DisklessTopicLifecycle extends AutoCloseable {
         default CompletableFuture<Void> ensureTopic(String topicName, Uuid topicId, int partitions) {
             return ensurePartitions(Set.of(new PartitionRange(topicId, topicName, 0, partitions)));
         }
+
+        /**
+         * Deletes one immutable topic incarnation before Kafka deletes its metadata. A failure keeps
+         * the topic in KRaft so the client can retry. A same-name replacement has a different ID.
+         */
+        CompletableFuture<Void> deleteTopic(String topicName, Uuid topicId);
     }
 
     /**
@@ -57,6 +62,12 @@ public interface DisklessTopicLifecycle extends AutoCloseable {
          */
         CompletableFuture<Void> ensureTopic(String topicName, Uuid topicId, int partitions,
                                             Map<String, String> configs, long sourceRevision);
+
+        /**
+         * Deletes one immutable topic incarnation after Kafka commits its deletion, and durably
+         * fences the ID so an in-flight create cannot recreate it after the future completes.
+         */
+        CompletableFuture<Void> deleteTopic(String topicName, Uuid topicId);
 
         /**
          * Includes in-progress creates and deletes with explicit Kafka ownership and source revision.

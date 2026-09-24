@@ -17,7 +17,7 @@
 
 package kafka.server
 
-import io.aiven.inkless.engine.DisklessEngines
+import io.aiven.inkless.engine.loader.DisklessEngines
 import io.aiven.inkless.config.InklessConfig
 import java.util
 import java.util.concurrent.TimeUnit

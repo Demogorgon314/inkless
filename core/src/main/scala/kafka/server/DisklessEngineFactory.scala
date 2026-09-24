@@ -16,18 +16,20 @@
  */
 package kafka.server
 
-import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.control_plane.ControlPlane
-import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessTopicLifecycle, InklessDisklessEngine, InklessTopicLifecycle}
+import io.aiven.inkless.engine.{DisklessEngine, DisklessEngineContext, DisklessLifecycleContext, DisklessStorageProvider, DisklessTopicLifecycle}
+import io.aiven.inkless.engine.builtin.InklessStorageProvider
+import io.aiven.inkless.engine.loader.DisklessEngines
 import kafka.server.metadata.{InklessMetadataView, KafkaDisklessMetadataSnapshot}
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.metadata.KRaftMetadataCache
+import org.apache.kafka.server.util.Scheduler
 import org.apache.kafka.storage.internals.log.LogConfig
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats
 
-import scala.jdk.OptionConverters._
+import java.util.Optional
 
-/** Assembles one engine and resource owner for either storage implementation. */
+/** Selects one storage provider and creates its broker and controller components. */
 object DisklessEngineFactory {
   final class ControllerStorage(val lifecycle: DisklessTopicLifecycle) extends AutoCloseable {
     private val contracts = lifecycle match {
@@ -45,14 +47,15 @@ object DisklessEngineFactory {
 
   def createControllerStorage(config: KafkaConfig, controlPlane: Option[ControlPlane]): Option[ControllerStorage] = {
     if (!config.disklessStorageSystemEnabled) return None
-    val lifecycle = if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG))
-      Some(DisklessEngines.loadLifecycle(config.originals))
-    else controlPlane.map(cp => new InklessTopicLifecycle(cp))
-    lifecycle.map { service =>
-      try new ControllerStorage(service)
+    val provider: Option[DisklessStorageProvider] =
+      if (DisklessEngines.isConfigured(config.originals)) Some(DisklessEngines.load(config.originals))
+      else controlPlane.map(InklessStorageProvider.forController)
+    provider.map { p =>
+      val lifecycle = p.createTopicLifecycle(new DisklessLifecycleContext(DisklessEngines.providerConfigs(config.originals)))
+      try new ControllerStorage(lifecycle)
       catch {
         case failure: Throwable =>
-          try service.close()
+          try lifecycle.close()
           catch { case closeFailure: Throwable => failure.addSuppressed(closeFailure) }
           throw failure
       }
@@ -61,39 +64,37 @@ object DisklessEngineFactory {
 
   def create(config: KafkaConfig,
              time: Time,
+             scheduler: Scheduler,
              metadataCache: KRaftMetadataCache,
              metadata: InklessMetadataView,
              metrics: BrokerTopicStats,
              defaultLogConfig: () => LogConfig,
              controlPlane: Option[ControlPlane]): Option[DisklessEngine] = {
     if (!config.disklessStorageSystemEnabled) return None
-    if (config.originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
-      val context = new DisklessEngine.Context(time, config.brokerId, metrics, config.extractLogConfigMap,
-        () => new KafkaDisklessMetadataSnapshot(metadataCache.currentImage()))
-      Some(DisklessEngines.loadBroker(config.originals, context))
-    } else {
-      controlPlane.map { cp =>
-        val state = SharedState.initialize(time, config.brokerId, config.inklessConfig, metadata, cp,
-          metrics, () => defaultLogConfig())
-        try nativeEngine(config, state)
-        catch {
-          case failure: Throwable =>
-            try state.close()
-            catch { case closeFailure: Throwable => failure.addSuppressed(closeFailure) }
-            throw failure
-        }
-      }
-    }
+    val provider: Option[DisklessStorageProvider] =
+      if (DisklessEngines.isConfigured(config.originals)) Some(DisklessEngines.load(config.originals))
+      else controlPlane.map(cp => nativeProvider(config, cp, metadata, metrics, defaultLogConfig))
+    provider.map(_.createBrokerEngine(new DisklessEngineContext(
+      DisklessEngines.providerConfigs(config.originals), config.brokerId, time, scheduler,
+      () => new KafkaDisklessMetadataSnapshot(metadataCache.currentImage()),
+      () => config.extractLogConfigMap)))
   }
 
-  def nativeEngine(config: KafkaConfig, state: SharedState): InklessDisklessEngine = {
-    val consolidation = if (config.disklessRemoteStorageConsolidationEnabled) {
-      Some(new InklessDisklessEngine.ConsolidationConfig(
+  def nativeProvider(config: KafkaConfig,
+                     controlPlane: ControlPlane,
+                     metadata: InklessMetadataView,
+                     metrics: BrokerTopicStats,
+                     defaultLogConfig: () => LogConfig): InklessStorageProvider =
+    InklessStorageProvider.forBroker(controlPlane, new InklessStorageProvider.BrokerServices(
+      config.inklessConfig, metadata, metrics, () => defaultLogConfig(), consolidationConfig(config),
+      config.logInitialTaskDelayMs))
+
+  def consolidationConfig(config: KafkaConfig): Optional[InklessStorageProvider.ConsolidationConfig] =
+    if (config.disklessRemoteStorageConsolidationEnabled) {
+      Optional.of(new InklessStorageProvider.ConsolidationConfig(
         config.disklessConsolidationFetchMetadataThreadPoolSize,
         config.disklessConsolidationFetchDataThreadPoolSize,
         config.disklessConsolidationFetchLaggingRequestRateLimit,
         config.disklessConsolidationFindBatchesMaxPerPartition))
-    } else None
-    new InklessDisklessEngine(state, consolidation.toJava)
-  }
+    } else Optional.empty()
 }

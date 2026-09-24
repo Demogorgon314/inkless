@@ -25,6 +25,8 @@
 
 # ── OWNED — net-new, entirely inkless ────────────────────────────────────────
 storage/inkless/**                                       @aiven/inkless  # core Java: control_plane, storage_backend, produce/consume, cache, metadata
+storage/diskless-api/**                                  @aiven/inkless  # experimental diskless engine SPI that storage providers compile against
+checkstyle/import-control-diskless-api.xml               @aiven/inkless  # keeps the SPI free of implementation imports
 core/src/main/scala/io/aiven/inkless/**                  @aiven/inkless  # Scala broker integration in its own package (e.g. consolidation)
 core/src/test/scala/io/aiven/inkless/**                  @aiven/inkless  # tests for the above
 core/src/main/scala/kafka/server/*Diskless*.scala        @aiven/inkless  # net-new diskless files in the upstream package (e.g. DisklessFetchOffsetRouter)

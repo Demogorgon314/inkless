@@ -18,6 +18,8 @@ package kafka.server.metadata;
 
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.config.TopicConfig;
+import org.apache.kafka.common.internals.Topic;
 import org.apache.kafka.common.utils.ExponentialBackoff;
 import org.apache.kafka.image.ConfigurationsDelta;
 import org.apache.kafka.image.MetadataDelta;
@@ -52,7 +54,6 @@ import java.util.function.BiConsumer;
 
 import io.aiven.inkless.engine.DisklessFutures;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
-import io.aiven.inkless.engine.DisklessTopics;
 
 /**
  * Drives diskless storage lifecycle operations from the active controller's metadata image.
@@ -221,7 +222,7 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
         for (Uuid id : topics.deletedTopicIds()) {
             // The deleted topic is only in the image the delta was built from, and so is its config.
             TopicImage old = oldImage.topics().getTopic(id);
-            if (old != null && DisklessTopics.isDiskless(old.name(), topicConfigs(oldImage, old.name()))) {
+            if (old != null && isDiskless(old.name(), topicConfigs(oldImage, old.name()))) {
                 remember(new Desired(old.name(), id, false, 0, Map.of(), sourceRevision));
             }
         }
@@ -262,7 +263,7 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
         long sourceRevision = image.highestOffsetAndEpoch().offset();
         for (TopicImage topic : image.topics().topicsById().values()) {
             Map<String, String> configs = topicConfigs(image, topic.name());
-            if (DisklessTopics.isDiskless(topic.name(), configs)) {
+            if (isDiskless(topic.name(), configs)) {
                 remember(new Desired(topic.name(), topic.id(), true, topic.partitions().size(),
                     configs, sourceRevision));
             }
@@ -285,7 +286,7 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
             return;
         }
         Map<String, String> configs = topicConfigs(image, topic.name());
-        if (DisklessTopics.isDiskless(topic.name(), configs)) {
+        if (isDiskless(topic.name(), configs)) {
             remember(new Desired(topic.name(), id, true, topic.partitions().size(), configs, sourceRevision));
         } else {
             forget(id);
@@ -603,6 +604,10 @@ public final class DisklessTopicLifecycleReconciler implements MetadataPublisher
             log.debug("Dropping a diskless lifecycle task; the reconciler is shutting down", e);
             return null;
         }
+    }
+
+    private static boolean isDiskless(String topic, Map<String, String> configs) {
+        return !Topic.isInternal(topic) && Boolean.parseBoolean(configs.get(TopicConfig.DISKLESS_ENABLE_CONFIG));
     }
 
     private static Map<String, String> topicConfigs(MetadataImage image, String topicName) {

@@ -18,7 +18,7 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.engine.DisklessEngine
+import io.aiven.inkless.engine.LogTiering
 import org.apache.kafka.common.protocol.Errors
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager
@@ -31,7 +31,7 @@ import scala.jdk.CollectionConverters._
 
 class ConsolidatedDisklessLogPruner(replicaManager: ReplicaManager,
                                     inklessMetadataView: InklessMetadataView,
-                                    storage: DisklessEngine) extends Runnable with Logging {
+                                    storage: LogTiering) extends Runnable with Logging {
 
   override def run(): Unit = {
     // Read the classic-to-diskless start offset once per partition and thread it through, so the

@@ -17,7 +17,8 @@
 
 package kafka.server
 
-import io.aiven.inkless.engine.{DisklessTopicLifecycle, InklessTopicLifecycle}
+import io.aiven.inkless.engine.DisklessTopicLifecycle
+import io.aiven.inkless.engine.builtin.InklessTopicLifecycle
 import io.aiven.inkless.control_plane.{ControlPlane, CreateTopicAndPartitionsRequest}
 import kafka.network.RequestChannel
 import kafka.server.QuotaFactory.QuotaManagers

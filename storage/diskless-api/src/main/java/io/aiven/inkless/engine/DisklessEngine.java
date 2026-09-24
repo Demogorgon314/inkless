@@ -17,19 +17,19 @@
 package io.aiven.inkless.engine;
 
 import org.apache.kafka.common.Uuid;
-import org.apache.kafka.common.utils.Time;
-import org.apache.kafka.server.util.Scheduler;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.Closeable;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Supplier;
+import java.util.Optional;
 
 /**
  * Experimental broker data-plane boundary. The engine owns record validation, offsets,
  * producer state, and persistence; Kafka owns authorization and classic/diskless routing.
  * This interface is not a complete storage-provider or stable public API.
+ *
+ * <p>Every engine implements append, fetch, and offset lookup. Optional behavior is exposed
+ * through the extension accessors. Kafka reads each accessor once after construction, so an
+ * accessor must return the same value for the engine's lifetime. An absent extension means Kafka
+ * never starts the workflows that depend on it.
  *
  * <p>Batch operations complete normally with one non-null result per requested partition, including
  * partition failures. They never omit failed partitions. An exceptional future means the batch
@@ -41,46 +41,48 @@ import java.util.function.Supplier;
  *
  * <p>Kafka stops request handlers and the broker scheduler before close. The engine must settle
  * its own background work before releasing resources. Close is idempotent; it is not a per-request
- * cancellation API.
- * All operations share the engine lifetime. No operation returns an independently owned service.
- * Callbacks may run on completion threads, so neither side may assume a request-handler thread.
+ * cancellation API. Callbacks may run on completion threads, so neither side may assume a
+ * request-handler thread.
  */
-public interface DisklessEngine extends Appender, Fetcher, OffsetReader, LogRetention, LogTransition, Closeable {
-    /** Kafka-owned services; metadata.get() captures one image for a request or maintenance pass. */
-    record Context(Time time, int brokerId, BrokerTopicStats metrics,
-                   Map<String, Object> logDefaults, Supplier<DisklessMetadataSnapshot> metadata) {
-    }
-
-    /** Fences deleted topic incarnations before the broker retires their partition handles. */
-    default void onTopicDeleted(String name, Uuid topicId) {
-    }
-
-    /** Applies topic overrides from the same committed image as the supplied source revision. */
-    default void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
-    }
-
-    /** Starts engine-owned maintenance after broker construction. Called once before shutdown. */
-    default void start(Scheduler scheduler, long initialDelayMs) {
-    }
-
-    /** Optional operations. Core append, fetch, and offset lookup are always required. */
-    enum Capability {
-        /** Logical deletion through deleteRecords. */
-        DELETE_RECORDS,
-        /** Non-authoritative readiness hints through probeFetch. */
-        FETCH_PROBE,
-        /** Idempotent classic-log initialization and reconciliation. */
-        LOG_TRANSITION,
-        /** Background log copying, cross-tier start offsets, and safe copy reclamation. */
-        KAFKA_LOG_TIERING
+public interface DisklessEngine extends Appender, Fetcher, OffsetReader, Closeable {
+    /**
+     * Starts engine-owned maintenance on the context scheduler. Kafka calls it once, after the
+     * broker finishes constructing its request path and before it serves diskless requests.
+     */
+    default void start() {
     }
 
     /**
-     * Returns a non-null, immutable set fixed for this engine's lifetime.
-     * Kafka checks capabilities before invoking optional operations or starting their workflows.
-     * Implementations must honor every operation covered by an advertised capability.
+     * Fences a deleted topic incarnation before the broker retires its partitions. Runs on the
+     * metadata publisher thread: it must return promptly and defer remote I/O to engine threads.
      */
-    default Set<Capability> capabilities() {
-        return Set.of();
+    default void onTopicDeleted(String name, Uuid topicId) {
+    }
+
+    /**
+     * Applies topic overrides from the committed image that produced the supplied revision.
+     * Runs on the metadata publisher thread under the same constraints as onTopicDeleted.
+     */
+    default void onTopicConfigChanged(DisklessMetadataSnapshot.TopicMetadata topic) {
+    }
+
+    /** Returns non-authoritative readiness hints that let Kafka park fetches in its purgatory. */
+    default Optional<FetchProbing> fetchProbing() {
+        return Optional.empty();
+    }
+
+    /** Returns logical record deletion for DeleteRecords requests. */
+    default Optional<RecordDeletion> recordDeletion() {
+        return Optional.empty();
+    }
+
+    /** Returns copying of diskless records into Kafka's log tiers and the cross-tier offsets. */
+    default Optional<LogTiering> logTiering() {
+        return Optional.empty();
+    }
+
+    /** Returns takeover of classic logs after Kafka commits a classic-to-diskless transition. */
+    default Optional<LogTransition> logTransition() {
+        return Optional.empty();
     }
 }

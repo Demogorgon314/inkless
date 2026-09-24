@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine;
+package io.aiven.inkless.engine.builtin;
 
 import org.apache.kafka.common.Uuid;
 
@@ -24,6 +24,7 @@ import java.util.stream.Collectors;
 
 import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.CreateTopicAndPartitionsRequest;
+import io.aiven.inkless.engine.DisklessTopicLifecycle;
 
 /** Preserves native provisioning and deletion ordering without claiming revision or deletion fences. */
 public final class InklessTopicLifecycle implements DisklessTopicLifecycle.RequestDriven {

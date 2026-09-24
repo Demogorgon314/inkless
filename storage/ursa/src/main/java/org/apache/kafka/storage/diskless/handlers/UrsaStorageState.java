@@ -25,14 +25,12 @@ import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.config.ServerLogConfigs;
 import org.apache.kafka.storage.diskless.DisklessStorageStateOperations;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -69,7 +67,6 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     private final Time time;
     private final int brokerId;
     private final UrsaStorageConfig config;
-    private final BrokerTopicStats brokerTopicStats;
     private final DisklessLogMetrics logMetrics = new DisklessLogMetrics();
 
     private final ConcurrentHashMap<TopicIdPartition, UrsaPartitionLog> partitionLogs = new ConcurrentHashMap<>();
@@ -80,7 +77,7 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     /** One timer for every periodic and delayed task: retention checks and long-poll timeouts. */
     private final ScheduledExecutorService disklessTimer;
     private final ScheduledFuture<?> retentionTask;
-    private final Map<String, Object> logConfigDefaults;
+    private final Supplier<Map<String, ?>> logConfigDefaults;
     private final Supplier<DisklessMetadataSnapshot> metadata;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object lifecycleLock = new Object();
@@ -95,14 +92,12 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
             Time time,
             int brokerId,
             UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats,
-            Map<String, Object> logConfigDefaults,
+            Supplier<Map<String, ?>> logConfigDefaults,
             Supplier<DisklessMetadataSnapshot> metadata) {
         this.time = time;
         this.brokerId = brokerId;
         this.config = config;
-        this.brokerTopicStats = brokerTopicStats;
-        this.logConfigDefaults = logConfigDefaults != null ? logConfigDefaults : Collections.emptyMap();
+        this.logConfigDefaults = Objects.requireNonNull(logConfigDefaults, "logConfigDefaults must not be null");
         this.metadata = Objects.requireNonNull(metadata, "metadata must not be null");
         this.producerStateScheduler = new ScheduledThreadPoolExecutor(1, runnable -> {
             Thread thread = new Thread(runnable, "producer-state-manager");
@@ -159,19 +154,16 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
 
     /** The broker default, which the log config map may carry under either the server or the topic name. */
     private String defaultTimestampType() {
-        Object serverDefault = logConfigDefaults.get(ServerLogConfigs.LOG_MESSAGE_TIMESTAMP_TYPE_CONFIG);
+        Map<String, ?> defaults = logConfigDefaults.get();
+        Object serverDefault = defaults.get(ServerLogConfigs.LOG_MESSAGE_TIMESTAMP_TYPE_CONFIG);
         if (serverDefault == null) {
-            serverDefault = logConfigDefaults.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG);
+            serverDefault = defaults.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG);
         }
         return serverDefault == null ? TimestampType.CREATE_TIME.name : String.valueOf(serverDefault);
     }
 
     public UrsaStorageConfig config() {
         return config;
-    }
-
-    public BrokerTopicStats brokerTopicStats() {
-        return brokerTopicStats;
     }
 
     public void applyTopicConfig(String topicName, Uuid topicId, Map<String, String> topicConfig) {
@@ -475,7 +467,7 @@ public final class UrsaStorageState implements DisklessStorageStateOperations {
     }
 
     private long getDefaultLongConfig(String key, long fallback) {
-        Object value = logConfigDefaults.get(key);
+        Object value = logConfigDefaults.get().get(key);
         if (value == null) {
             return fallback;
         }

@@ -20,6 +20,7 @@ package kafka.server
 import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.config.InklessConfig
 import io.aiven.inkless.control_plane.ControlPlane
+import io.aiven.inkless.engine.builtin.InklessDisklessEngine
 import kafka.cluster.Partition
 import kafka.server.metadata.InklessMetadataView
 import kafka.utils.TestUtils
@@ -235,7 +236,8 @@ class DisklessSwitchInvariantsTest {
     disklessTopics.foreach(t => when(inklessMetadata.isDisklessTopic(t)).thenReturn(true))
     when(sharedState.metadata()).thenReturn(inklessMetadata)
 
-    val engine = DisklessEngineFactory.nativeEngine(config, sharedState)
+    val engine = new InklessDisklessEngine(sharedState, DisklessEngineFactory.consolidationConfig(config),
+      time.scheduler, config.logInitialTaskDelayMs)
     val logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
     new ReplicaManager(

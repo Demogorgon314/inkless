@@ -48,10 +48,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessEngineContext;
 import io.aiven.inkless.engine.DisklessEngineContractAssertions;
-import io.aiven.inkless.engine.DisklessEngines;
+import io.aiven.inkless.engine.DisklessLifecycleContext;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
+import io.aiven.inkless.engine.loader.DisklessEngines;
 import io.aiven.inkless.test_utils.MinioContainer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -150,17 +151,20 @@ public class UrsaEngineIntegrationTest {
 
                     var oldId = admin.describeTopics(List.of(DISKLESS)).allTopicNames()
                         .get(30, TimeUnit.SECONDS).get(DISKLESS).topicId();
-                    var providerConfig = cluster.controllers().values().iterator().next().config().originals();
+                    var originals = cluster.controllers().values().iterator().next().config().originals();
+                    var provider = DisklessEngines.load(originals);
+                    var providerConfig = DisklessEngines.providerConfigs(originals);
                     var broker = cluster.brokers().values().iterator().next();
-                    var context = new DisklessEngine.Context(Time.SYSTEM, broker.config().brokerId(),
-                        broker.brokerTopicStats(), broker.config().extractLogConfigMap(),
-                        () -> new KafkaDisklessMetadataSnapshot(broker.metadataCache().currentImage()));
-                    try (var engine = DisklessEngines.loadBroker(providerConfig, context)) {
+                    var context = new DisklessEngineContext(providerConfig, broker.config().brokerId(), Time.SYSTEM,
+                        broker.kafkaScheduler(),
+                        () -> new KafkaDisklessMetadataSnapshot(broker.metadataCache().currentImage()),
+                        () -> broker.config().extractLogConfigMap());
+                    try (var engine = provider.createBrokerEngine(context)) {
                         DisklessEngineContractAssertions.assertOffsetBatch(engine,
                             new TopicIdPartition(oldId, partition),
                             new TopicIdPartition(Uuid.randomUuid(), partition), 21L);
                     }
-                    try (var inspection = DisklessEngines.loadLifecycle(providerConfig)) {
+                    try (var inspection = provider.createTopicLifecycle(new DisklessLifecycleContext(providerConfig))) {
                         var lifecycle = (DisklessTopicLifecycle.MetadataDriven) inspection;
                         TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
                             .stream().anyMatch(topic -> topic.topicId().equals(oldId)),

@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.Fetcher.{FetchProbe, FetchAvailability}
+import io.aiven.inkless.engine.FetchProbing.{FetchProbe, FetchAvailability}
 import kafka.utils.TestUtils
 
 import java.util.{Collections, Optional, OptionalInt, OptionalLong}

@@ -19,21 +19,21 @@ package org.apache.kafka.storage.diskless;
 import org.apache.kafka.storage.diskless.handlers.UrsaDisklessTopicLifecycle;
 import org.apache.kafka.storage.diskless.handlers.UrsaStorageConfig;
 
-import java.util.Map;
-
 import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessEngineContext;
+import io.aiven.inkless.engine.DisklessLifecycleContext;
 import io.aiven.inkless.engine.DisklessStorageProvider;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
 
 /** Creates independent broker and controller resources from the same plugin configuration. */
 public final class UrsaStorageProvider implements DisklessStorageProvider {
     @Override
-    public DisklessEngine createBrokerEngine(Map<String, ?> configs, DisklessEngine.Context context) throws Exception {
-        return new UrsaDisklessEngine(UrsaStorageConfig.fromConfigs(configs), context);
+    public DisklessEngine createBrokerEngine(DisklessEngineContext context) throws Exception {
+        return new UrsaDisklessEngine(UrsaStorageConfig.fromConfigs(context.configs()), context);
     }
 
     @Override
-    public DisklessTopicLifecycle createTopicLifecycle(Map<String, ?> configs) throws Exception {
-        return new UrsaDisklessTopicLifecycle(UrsaStorageConfig.fromConfigs(configs));
+    public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) throws Exception {
+        return new UrsaDisklessTopicLifecycle(UrsaStorageConfig.fromConfigs(context.configs()));
     }
 }

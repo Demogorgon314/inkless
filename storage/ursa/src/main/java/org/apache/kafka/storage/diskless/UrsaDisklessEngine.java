@@ -40,6 +40,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.function.Supplier;
 
 import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessEngineContext;
 import io.aiven.inkless.engine.DisklessMetadataSnapshot;
 import io.aiven.inkless.engine.DisklessRequestContext;
 
@@ -49,43 +50,37 @@ public final class UrsaDisklessEngine implements DisklessEngine {
     private static final long RECONCILE_INTERVAL_MS = 30_000L;
     private final DisklessStorageEngine storage;
     private final Supplier<DisklessMetadataSnapshot> metadata;
+    private final Scheduler scheduler;
     private ScheduledFuture<?> maintenance;
     private boolean closed;
 
-    public UrsaDisklessEngine(UrsaStorageConfig config, Context context) {
+    public UrsaDisklessEngine(UrsaStorageConfig config, DisklessEngineContext context) {
         this.metadata = context.metadata();
+        this.scheduler = context.scheduler();
         storage = new UrsaStorageEngineImpl(context.time(), context.brokerId(), config,
-            context.metrics(), context.logDefaults(), context.metadata());
+            context.brokerLogDefaults(), context.metadata());
     }
 
     @Override
-    public synchronized void start(Scheduler scheduler, long initialDelayMs) {
+    public synchronized void start() {
         if (closed || maintenance != null) {
             throw new IllegalStateException("Engine already started or closed");
         }
         maintenance = scheduler.schedule("ursa-partition-reconciliation", this::reconcilePartitions,
-            initialDelayMs, RECONCILE_INTERVAL_MS);
+            RECONCILE_INTERVAL_MS, RECONCILE_INTERVAL_MS);
     }
 
     private void reconcilePartitions() {
-        // Kafka owns the scheduler threads; they do not inherit the plugin's context classloader.
-        Thread thread = Thread.currentThread();
-        ClassLoader original = thread.getContextClassLoader();
-        thread.setContextClassLoader(getClass().getClassLoader());
-        try {
-            var snapshot = metadata.get();
-            for (var partition : storage.snapshotTrackedPartitions()) {
-                try {
-                    if (snapshot.partition(partition).isEmpty()) {
-                        // Only retire local handles. The controller owns durable deletion and its fencing.
-                        storage.cleanupPartition(partition, false);
-                    }
-                } catch (RuntimeException failure) {
-                    LOG.warn("Failed to retire partition {}; retrying on the next reconciliation", partition, failure);
+        var snapshot = metadata.get();
+        for (var partition : storage.snapshotTrackedPartitions()) {
+            try {
+                if (snapshot.partition(partition).isEmpty()) {
+                    // Only retire local handles. The controller owns durable deletion and its fencing.
+                    storage.cleanupPartition(partition, false);
                 }
+            } catch (RuntimeException failure) {
+                LOG.warn("Failed to retire partition {}; retrying on the next reconciliation", partition, failure);
             }
-        } finally {
-            thread.setContextClassLoader(original);
         }
     }
 

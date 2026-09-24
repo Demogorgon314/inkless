@@ -24,9 +24,10 @@ import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, Consolidat
 import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, FetchOffsetHandler}
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetResponse, BatchInfo, BatchMetadata, ControlPlane, ControlPlaneException, FindBatchResponse, RepairDisklessLogRequest, RepairDisklessLogResponse, DeleteRecordsResponse => CpDeleteRecordsResponse, ListOffsetsRequest => CpListOffsetsRequest, ListOffsetsResponse => CpListOffsetsResponse}
 import io.aiven.inkless.produce.AppendHandler
-import io.aiven.inkless.engine.{DisklessEngine, DisklessEngines, DisklessMetadataSnapshot}
-import io.aiven.inkless.engine.OffsetReader
-import io.aiven.inkless.engine.DisklessEnginesTest.{TestEngine => TestDisklessEngine}
+import io.aiven.inkless.engine.{DisklessMetadataSnapshot, OffsetReader, RecordDeletion}
+import io.aiven.inkless.engine.builtin.InklessDisklessEngine
+import io.aiven.inkless.engine.loader.DisklessEngines
+import io.aiven.inkless.engine.loader.DisklessEnginesTest.{TestEngine => TestDisklessEngine, TestProvider => TestDisklessProvider, testContext}
 import kafka.cluster.Partition
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.server.metadata.InklessMetadataView
@@ -145,7 +146,7 @@ class ReplicaManagerInklessTest {
     val pluginConstructor = mockConstruction(classOf[TestDisklessEngine])
     try {
       val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
-        engineClassName = Some(classOf[io.aiven.inkless.engine.DisklessEnginesTest.TestProvider].getName))
+        engineClassName = Some(classOf[TestDisklessProvider].getName))
       try {
         val engine = pluginConstructor.constructed().get(0)
         val delta = new MetadataDelta.Builder().setImage(MetadataImage.EMPTY).build()
@@ -188,16 +189,15 @@ class ReplicaManagerInklessTest {
     val pluginConstructor = mockConstruction(classOf[TestDisklessEngine])
     try {
       val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
-        engineClassName = Some(classOf[io.aiven.inkless.engine.DisklessEnginesTest.TestProvider].getName))
+        engineClassName = Some(classOf[TestDisklessProvider].getName))
       try {
         val engine = pluginConstructor.constructed().get(0)
-        assertTrue(engine.capabilities().isEmpty)
+        assertTrue(engine.recordDeletion().isEmpty)
         var response: Map[TopicPartition, DeleteRecordsPartitionResult] = Map.empty
         replicaManager.deleteRecords(0L, Map(disklessTopicPartition.topicPartition() -> 10L),
           result => response = result)
         assertEquals(Errors.UNKNOWN_SERVER_ERROR.code,
           response(disklessTopicPartition.topicPartition()).errorCode())
-        verify(engine, never()).deleteRecords(any())
       } finally {
         replicaManager.shutdown(checkpointHW = false)
       }
@@ -214,9 +214,10 @@ class ReplicaManagerInklessTest {
       Optional.empty(), OptionalInt.empty(), false))
     val offsetResult = util.Map.of(disklessTopicPartition,
       new OffsetReader.ListOffsetsResult(Errors.NONE, 0L, 123L, Optional.of[Integer](0)))
+    val deletion = mock(classOf[RecordDeletion])
     val initializer: MockedConstruction.MockInitializer[TestDisklessEngine] = {
       case (engine, _) =>
-        when(engine.capabilities()).thenReturn(util.Set.of(DisklessEngine.Capability.DELETE_RECORDS))
+        when(engine.recordDeletion()).thenReturn(Optional.of(deletion))
         when(engine.append(any(), any(), any())).thenReturn(CompletableFuture.completedFuture(appendResult))
         when(engine.fetch(any(), any())).thenReturn(CompletableFuture.completedFuture(fetchResult))
         when(engine.listOffsets(any())).thenReturn(CompletableFuture.completedFuture(offsetResult))
@@ -227,7 +228,7 @@ class ReplicaManagerInklessTest {
     val offsetConstructor = mockConstruction(classOf[FetchOffsetHandler])
     try {
       val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()),
-        engineClassName = Some(classOf[io.aiven.inkless.engine.DisklessEnginesTest.TestProvider].getName))
+        engineClassName = Some(classOf[TestDisklessProvider].getName))
       val engine = pluginConstructor.constructed().get(0)
       try {
         val callback = mock(classOf[Function[util.Map[TopicIdPartition, PartitionResponse], Unit]])
@@ -255,14 +256,14 @@ class ReplicaManagerInklessTest {
         assertEquals(123L, offsets.iterator().next().partitions().get(0).offset())
         verify(engine).listOffsets(any())
 
-        when(engine.deleteRecords(any())).thenReturn(
+        when(deletion.deleteRecords(any())).thenReturn(
           CompletableFuture.failedFuture(new KafkaStorageException("Storage unavailable")))
         var deleteResponse: Map[TopicPartition, DeleteRecordsPartitionResult] = Map.empty
         replicaManager.deleteRecords(0L, Map(disklessTopicPartition.topicPartition() -> 10L),
           response => deleteResponse = response)
         assertEquals(Errors.KAFKA_STORAGE_ERROR.code(),
           deleteResponse(disklessTopicPartition.topicPartition()).errorCode())
-        verify(engine).deleteRecords(util.Map.of(disklessTopicPartition.topicPartition(), java.lang.Long.valueOf(10L)))
+        verify(deletion).deleteRecords(util.Map.of(disklessTopicPartition, java.lang.Long.valueOf(10L)))
         assertTrue(appendConstructor.constructed().isEmpty)
         assertTrue(fetchConstructor.constructed().isEmpty)
         assertTrue(offsetConstructor.constructed().isEmpty)
@@ -8920,7 +8921,8 @@ class ReplicaManagerInklessTest {
 
     val logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
     val nativeEngine = if (engineClassName.isEmpty && inklessSharedStateEnabled)
-      Some(DisklessEngineFactory.nativeEngine(config, sharedState)) else None
+      Some(new InklessDisklessEngine(sharedState, DisklessEngineFactory.consolidationConfig(config),
+        time.scheduler, config.logInitialTaskDelayMs)) else None
 
     new ReplicaManager(
       metrics = metrics,
@@ -8933,7 +8935,7 @@ class ReplicaManagerInklessTest {
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = alterPartitionManager,
       disklessEngine = if (engineClassName.isDefined) {
-        Some(DisklessEngines.loadBroker(config.originals, null))
+        Some(DisklessEngines.load(config.originals).createBrokerEngine(testContext(util.Map.of(), time.scheduler)))
       } else nativeEngine,
       inklessMetadataView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,

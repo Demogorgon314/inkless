@@ -18,7 +18,6 @@
 package kafka.server
 
 import io.aiven.inkless.engine.DisklessEngine
-import io.aiven.inkless.engine.DisklessEngine.Capability
 import kafka.coordinator.group.CoordinatorPartitionWriter
 import kafka.coordinator.transaction.TransactionCoordinator
 import kafka.log.LogManager
@@ -356,9 +355,10 @@ class BrokerServer(
       val defaultActionQueue = new DelayedActionQueue
 
       val inklessMetadataView = new InklessMetadataView(metadataCache, () => config.extractLogConfigMap)
-      maybeDisklessEngine = DisklessEngineFactory.create(config, time, metadataCache, inklessMetadataView,
+      maybeDisklessEngine = DisklessEngineFactory.create(config, time, kafkaScheduler, metadataCache, inklessMetadataView,
         brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.inklessControlPlane)
-      val logTransition = maybeDisklessEngine.filter(_.capabilities().contains(Capability.LOG_TRANSITION))
+      val logTransition = maybeDisklessEngine.flatMap(_.logTransition().toScala)
+      val logTiering = maybeDisklessEngine.flatMap(_.logTiering().toScala)
 
       initDisklessLogChannelManager = new NodeToControllerChannelManagerImpl(
         controllerNodeProvider,
@@ -406,7 +406,8 @@ class BrokerServer(
       // Forwards the leader-only leg of DeleteRecords for diskless topics with a local-log
       // component to the partition's real KRaft leader, since the metadata transformer advertises
       // an AZ-selected replica (a follower) as the client-facing leader.
-      maybeDisklessDeleteRecordsForwarder = maybeDisklessEngine.filter(_.capabilities().contains(Capability.KAFKA_LOG_TIERING)).map { _ =>
+      // Only engines that tier or take over classic logs create partitions with a local-log component.
+      maybeDisklessDeleteRecordsForwarder = Option.when(logTiering.isDefined || logTransition.isDefined) {
         val forwarderLogContext = new LogContext(s"[DisklessDeleteRecordsForwarder broker=${config.brokerId}]")
         val forwarderNetworkClient = NetworkUtils.buildNetworkClient("DisklessDeleteRecordsForwarder", config, metrics, time, forwarderLogContext)
         val forwarder = new DisklessDeleteRecordsForwarder(config, forwarderNetworkClient, metadataCache, inklessMetadataView, time)
@@ -821,7 +822,7 @@ class BrokerServer(
           }
           // For consolidating diskless topics, persist the leader's cross-tier earliest offset in the
           // control plane so any broker can serve it for ListOffsets(EARLIEST). No-op for classic topics.
-          maybeDisklessEngine.filter(_.capabilities().contains(Capability.KAFKA_LOG_TIERING)).foreach(_.reportRemoteLogStartOffset(tp, remoteLogStartOffset))
+          if (_replicaManager != null) _replicaManager.reportDisklessRemoteLogStartOffset(tp, remoteLogStartOffset)
         },
         brokerTopicStats, metrics, endpoint.toJava,
         // Reclaim-floor / become-leader log-start override: for a consolidating diskless partition use the

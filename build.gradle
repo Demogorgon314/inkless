@@ -2585,6 +2585,24 @@ project(':storage') {
   }
 }
 
+project(':storage:diskless-api') {
+  base { archivesName = 'kafka-diskless-api' }
+
+  // Plugins compile against this module alone. Keep it limited to interfaces and value types.
+  dependencies {
+    api project(':clients')
+    api project(':server-common')
+  }
+
+  javadoc {
+    enabled = false
+  }
+
+  checkstyle {
+    configProperties = checkstyleConfigProperties('import-control-diskless-api.xml')
+  }
+}
+
 project(':storage:ursa') {
   base { archivesName = 'kafka-ursa-engine' }
 
@@ -2598,7 +2616,7 @@ project(':storage:ursa') {
     compileOnly project(':server-common')
     compileOnly project(':storage')
     compileOnly project(':storage:storage-api')
-    compileOnly project(':storage:inkless')
+    compileOnly project(':storage:diskless-api')
     compileOnly libs.metrics
     compileOnly libs.slf4jApi
     implementation enforcedPlatform('org.openlakestream:ursa-storage:1.0.0')
@@ -2662,6 +2680,7 @@ project(':storage:inkless') {
 
   dependencies {
     api project(':clients')
+    api project(':storage:diskless-api')
     implementation project(':server-common')
     implementation project(':storage')
     implementation project(':metadata')

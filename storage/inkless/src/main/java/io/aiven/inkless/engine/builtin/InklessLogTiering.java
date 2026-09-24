@@ -14,10 +14,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine;
+package io.aiven.inkless.engine.builtin;
 
 import org.apache.kafka.common.TopicIdPartition;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.server.metrics.KafkaMetricsGroup;
@@ -41,12 +40,13 @@ import io.aiven.inkless.control_plane.AdvanceCrossTierLogStartOffsetResponse;
 import io.aiven.inkless.control_plane.ListOffsetsRequest;
 import io.aiven.inkless.control_plane.PruneDisklessLogsError;
 import io.aiven.inkless.control_plane.PruneDisklessLogsRequest;
+import io.aiven.inkless.engine.LogTiering;
 
-final class InklessConsolidationSupport implements LogRetention, Fetcher, Closeable {
+final class InklessLogTiering implements LogTiering, Closeable {
     private final SharedState state;
     private final Optional<FetchHandler> fetchHandler;
 
-    InklessConsolidationSupport(SharedState state, Optional<InklessDisklessEngine.ConsolidationConfig> config) {
+    InklessLogTiering(SharedState state, Optional<InklessStorageProvider.ConsolidationConfig> config) {
         this.state = state;
         this.fetchHandler = config.map(c -> new FetchHandler(new Reader(
             state.time(), state.objectKeyCreator(), state.keyAlignmentStrategy(), state.cache(),
@@ -60,7 +60,7 @@ final class InklessConsolidationSupport implements LogRetention, Fetcher, Closea
     }
 
     @Override
-    public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
+    public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetchForReplication(
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions) {
         return fetchHandler.orElseThrow(() -> new IllegalStateException("Consolidation is disabled"))
             .handle(params, partitions);
@@ -109,8 +109,8 @@ final class InklessConsolidationSupport implements LogRetention, Fetcher, Closea
     }
 
     @Override
-    public void reportRemoteLogStartOffset(TopicPartition partition, long offset) {
-        state.crossTierLogStartReporter().enqueue(partition, offset);
+    public void reportRemoteLogStartOffset(TopicIdPartition partition, long offset) {
+        state.crossTierLogStartReporter().enqueue(partition.topicPartition(), offset);
     }
 
     @Override

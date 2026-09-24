@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.DisklessEngine
+import io.aiven.inkless.engine.LogTransition
 import io.aiven.inkless.engine.LogTransition.{ProducerState}
 import kafka.cluster.Partition
 import kafka.server.InitDisklessLogManager._
@@ -34,7 +34,7 @@ import scala.jdk.CollectionConverters._
 
 class InitDisklessLogManager(
   controllerChannelManager: NodeToControllerChannelManager,
-  storage: DisklessEngine,
+  storage: LogTransition,
   scheduler: Scheduler,
   brokerId: Int,
   brokerEpochSupplier: () => Long,

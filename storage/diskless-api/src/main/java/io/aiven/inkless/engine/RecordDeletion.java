@@ -16,18 +16,21 @@
  */
 package io.aiven.inkless.engine;
 
+import org.apache.kafka.common.TopicIdPartition;
+import org.apache.kafka.common.protocol.Errors;
+
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
-/**
- * Creates fully initialized broker and controller components in an isolated runtime.
- * Providers have no owned resources; ownership of each component transfers to its caller.
- * If construction fails, the provider closes every resource it opened.
- *
- * <p>Factory calls and component calls run with the plugin context classloader. Providers must
- * preserve that context for asynchronous tasks they submit to executors they do not own.
- */
-public interface DisklessStorageProvider {
-    DisklessEngine createBrokerEngine(Map<String, ?> configs, DisklessEngine.Context context) throws Exception;
+/** Advances the logical start offset of diskless partitions for DeleteRecords requests. */
+@FunctionalInterface
+public interface RecordDeletion {
+    /** A nonnegative low watermark is meaningful only with NONE. */
+    record DeleteRecordsResult(Errors error, long lowWatermark) { }
 
-    DisklessTopicLifecycle createTopicLifecycle(Map<String, ?> configs) throws Exception;
+    /**
+     * Returns one result per requested partition, including failures. Kafka resolves topic IDs and
+     * runs any local-log deletion before calling this method.
+     */
+    CompletableFuture<Map<TopicIdPartition, DeleteRecordsResult>> deleteRecords(Map<TopicIdPartition, Long> offsets);
 }

@@ -28,17 +28,21 @@ KIP-1163. Transactions, managed replicas, consolidation, classic-to-diskless
 migration, and DeleteRecords are not implemented for the external provider.
 The broker rejects the first four feature combinations or requests through its
 existing diskless checks and the external-engine configuration validation.
-DeleteRecords fails through the engine capability check; it does
+DeleteRecords fails because Ursa exposes no `RecordDeletion` extension; it does
 not truncate Ursa data. The existing share-fetch path is not validated here.
 
 ## Architecture
 
 ```text
+storage/diskless-api    SPI only: provider, engine, extensions, lifecycle, value types
+storage/inkless         loader (isolated runtimes) and the built-in Inkless provider
+storage/ursa            Ursa provider, compiled against storage/diskless-api alone
+
 KafkaApis / ReplicaManager
   +-- classic partitions: existing local-log path
   +-- diskless partitions: DisklessEngine
-        +-- default: existing Inkless handlers
-        +-- isolated Ursa provider
+        +-- built-in: InklessStorageProvider -> existing Inkless handlers
+        +-- isolated: UrsaStorageProvider
               +-- UFK reader/writer and producer-state implementation
               +-- Lakestream catalog and Ursa object-storage runtime
               +-- Oxia metadata and producer-state snapshots
@@ -60,41 +64,63 @@ enforcer, file cleaner, topic purger, and shared state. Its private helpers
 implement background reading, retention coordination, and log initialization.
 They are never returned to callers.
 
-`DisklessEngineFactory` assembles one engine at broker startup. Both providers
-use the same constructor parameter and operation interfaces; there is no native
-consolidation service injected alongside the engine. `ReplicaManager` owns engine
-shutdown; the broker closes it if construction fails before ownership transfers.
-The broker stops its scheduler and drains fetchers before closing the engine.
-The engine cancels its scheduled tasks and closes handlers before shared state.
+`DisklessEngineFactory` selects one `DisklessStorageProvider` and creates every
+component through it. The built-in `InklessStorageProvider` receives the Inkless
+control plane and broker services through its constructor. An isolated provider
+receives only the SPI context. Both paths call `createBrokerEngine` and
+`createTopicLifecycle`, so broker code has no provider-specific branch after
+selection. `ReplicaManager` owns engine shutdown; the broker closes the engine if
+construction fails before ownership transfers. The broker stops its scheduler and
+drains fetchers before closing the engine. The engine cancels its scheduled tasks
+and closes handlers before shared state.
 
 | Boundary | Contract |
 | --- | --- |
-| `Appender`, `Fetcher`, `OffsetReader` | Asynchronous record operations; Kafka retains protocol routing and response handling. |
-| `deleteRecords` | Reject unsupported deletion before touching a local-log leg; return per-partition results or an exceptional future mapped by the broker. |
-| `probeFetch` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
-| `start`, `close` | Engine owns maintenance tasks and resources; startup runs once, and native close is idempotent. |
+| `Appender`, `Fetcher`, `OffsetReader` | Required asynchronous record operations; Kafka retains protocol routing and response handling. |
+| `start`, `close` | Engine owns maintenance tasks and resources; startup runs once on the context scheduler, and close is idempotent. |
+| `onTopicDeleted`, `onTopicConfigChanged` | Metadata callbacks on the publisher thread. They return promptly and defer remote I/O to engine threads. |
+| `FetchProbing` | Optional, ordered readiness hints with errors, watermark, and estimated bytes; no WAL coordinates cross the boundary. A cache miss is not authoritative. |
+| `RecordDeletion` | Optional logical deletion keyed by topic ID. Kafka rejects DeleteRecords before touching a local-log leg when the extension is absent. |
+| `LogTiering` | Optional copying into Kafka's log tiers, cross-tier start offsets, and reclamation of durably copied records. Logical deletion and copy reclamation are distinct operations. |
 | `LogTransition` | Optional initialization and repair after Kafka commits a classic-to-diskless transition. Kafka owns coordination and retries. |
-| `LogRetention` | Logical start offsets and reclamation of records durably copied to Kafka's log tiers. Logical deletion and copy reclamation are distinct operations. |
 | `DisklessTopicLifecycle` | Separate controller service for topic creation, expansion, configuration, deletion, and reconciliation. |
 
-`DisklessEngine` extends `Appender`, `Fetcher`, `OffsetReader`, `LogRetention`,
-and `LogTransition`. Both providers
-implement one engine and share its resources across those operations. Callers
-that only need reads or offset lookups depend on the smaller interface; there
-are no independently configured reader or writer plugins.
+`DisklessEngine` extends only `Appender`, `Fetcher`, and `OffsetReader`. A new
+implementation that provides these three operations and a topic lifecycle can
+serve produce, fetch, and ListOffsets. Every other feature is an extension
+interface returned by an accessor such as `logTiering()`. The returned object is
+the capability itself: Kafka reads each accessor once after construction and
+starts the dependent workflows only when the extension is present. There is no
+separate capability flag that can disagree with the implemented methods.
+
+| Extension | Kafka workflows that depend on it |
+| --- | --- |
+| `FetchProbing` | Parking diskless fetches in the fetch and consolidation purgatories. |
+| `RecordDeletion` | The diskless leg of DeleteRecords. |
+| `LogTiering` | Consolidation fetchers, the consolidated-log pruner, cross-tier ListOffsets(EARLIEST), and remote-start reporting. |
+| `LogTransition` | `InitDisklessLogManager` and diskless log repair after a classic-to-diskless switch. |
+
+Kafka creates the DeleteRecords forwarder when an engine exposes `LogTiering` or
+`LogTransition`, because only those extensions create partitions with a local-log
+component. Every extension identifies partitions by `TopicIdPartition`, and each
+defines its own result records instead of exposing Kafka protocol messages.
 
 The native consolidation and transition metadata calls retain their synchronous behavior.
 Turning them into asynchronous operations requires changing the surrounding
-Kafka coordination paths; this refactor does not make that claim. Ursa does not
-provide log-transition support. Kafka log tiering requires an explicit capability. Ursa does not advertise it;
-its own compaction does not implement that protocol.
+Kafka coordination paths; this refactor does not make that claim. Ursa exposes
+no extensions. Its own compaction does not implement the Kafka log tiering
+protocol.
 
 `ReplicaManager` retains `InklessMetadataView` for topic routing, leader epochs,
 and cross-tier offset decisions. These broker responsibilities apply regardless
 of the selected storage engine.
 
-`DisklessEngine.Context` supplies Kafka-owned services, broker identity, and a
-supplier of immutable metadata snapshots. Each snapshot resolves diskless topics
+`DisklessEngineContext` supplies provider settings, broker identity, time, the
+broker scheduler, current broker log defaults, and a supplier of immutable
+metadata snapshots. The broker log defaults supplier reflects dynamic broker
+configuration updates. `DisklessLifecycleContext` supplies provider settings to
+the controller lifecycle. Both are records, so Kafka can add services without
+changing the provider method signatures. Each snapshot resolves diskless topics
 by UUID and reads partition count, raw topic overrides, and source revision from
 one Kafka metadata image. Each snapshot caches resolved topics by UUID. Broker
 defaults remain separate. Configuration-change callbacks receive the same
@@ -121,25 +147,25 @@ partition, including failures; an exceptional append does not prove that nothing
 was committed. Engines own asynchronous buffers and cannot retain `RequestLocal`
 for use on background threads.
 
-`capabilities()` returns an immutable set fixed for the engine lifetime:
-`DELETE_RECORDS`, `FETCH_PROBE`, `LOG_TRANSITION`, and `KAFKA_LOG_TIERING`.
-Kafka checks the applicable capability before optional operations and workflows.
-All calls go directly to the engine; no call returns a service object, and broker
-code never downcasts to an implementation. Unsupported optional operations fail
-explicitly rather than claiming success.
+Broker code never downcasts to an implementation. Kafka log tiering means copying
+records into Kafka-managed logs, reporting remote start offsets, and reclaiming
+engine-resident copies only after Kafka establishes a safe durable-copy boundary.
+`reclaimReplicatedRecords` does not change the logical earliest offset or remove
+the last readable copy. `fetchForReplication` uses the fetch contract but lets
+the engine choose a dedicated background reader. Kafka calls it only while it
+runs consolidation fetchers.
 
-Kafka log tiering means copying records into Kafka-managed logs, reporting remote
-start offsets, and reclaiming engine-resident copies only after Kafka establishes
-a safe durable-copy boundary. `reclaimReplicatedRecords` does not change the
-logical earliest offset or remove the last readable copy. `fetchForReplication`
-uses the fetch contract but lets the engine choose a dedicated background reader.
+The loader establishes the plugin context classloader for every engine call. The
+proxy exposes every SPI interface the component implements, and extensions
+returned by accessors run with the same context. The context scheduler runs
+every task with the plugin context and rejects `startup`, `shutdown`, and
+`resizeThreadPool`, because Kafka owns the scheduler lifecycle. Providers must
+preserve the context when submitting work to other executors they do not own;
+the synchronous proxy cannot govern arbitrary future callbacks.
 
-The loader establishes the plugin context classloader for every engine call. Providers must preserve that context when submitting work to executors
-they do not own; the synchronous proxy cannot govern arbitrary future callbacks.
-
-External engines have no native batch-coordinate cache. `DelayedFetch` hands
-waiting to the engine's asynchronous fetch implementation when that cache is
-absent. The native engine retains its original readiness probe. Kafka still
+An engine without `FetchProbing` gives Kafka no readiness signal, so
+`DelayedFetch` completes at once and hands waiting to the engine's asynchronous
+fetch implementation. The native engine retains its original readiness probe. Kafka still
 combines classic and diskless results and applies its response handling.
 
 ## Controller lifecycle shared by both providers
@@ -158,7 +184,9 @@ selects the request service or reconciler once; ControllerApis accepts only
 | `RequestDriven` (native Inkless) | Provision after KRaft succeeds and before completing the response. Partition ranges exclude migrating partitions. | Complete storage deletion before deleting KRaft metadata. | Preserve the existing request-retry behavior. |
 | `MetadataDriven` (Ursa) | Reconcile the committed topic layout and configuration. | Reconcile committed deletion and durably fence the old topic ID. | Retry across leadership changes, inventory managed topics, and sweep orphans by source revision. |
 
-Both contracts share immutable topic identity and idempotent deletion.
+Both contracts use immutable topic identity and idempotent deletion. Each
+declares its own `deleteTopic` because the ordering relative to KRaft differs;
+the base interface has no shared operations that could hide that difference.
 `RequestDriven.ensurePartitions` supports explicit ranges on the migration path.
 Its `ensureTopic` has no unused configuration or revision arguments.
 `MetadataDriven.ensureTopic` receives the desired layout, configuration, and
@@ -273,9 +301,10 @@ The source baseline is UFK commit `706699788b`; the Inkless baseline is
 - The loader utilities come from UFK, with stricter private dependency isolation,
   JVM platform delegation, returned-service context handling, and asynchronous
   runtime-shutdown handling.
-- UFK's native storage API types remain private to the plugin. The broker API
-  stays in the existing Inkless module for this PoC; upstream work should put it
-  in a Kafka-owned API module.
+- UFK's native storage API types remain private to the plugin. The broker SPI
+  lives in `storage/diskless-api`, which depends only on `clients` and
+  `server-common`. The Ursa build compiles against that module instead of the
+  Inkless implementation. Upstream work should move it to a Kafka-owned package.
 
 Keep these copies identifiable when updating from UFK. Do not introduce a
 second broker routing layer or expose Lakestream/Oxia types through the engine
@@ -299,12 +328,15 @@ native handler, ReplicaManager, offset-router, KafkaApis, configuration,
 metadata-publisher, and delayed-fetch tests cover the affected broker behavior.
 The copied lifecycle tests cover retry, ordering, leadership loss, and sweeps.
 Consolidation and migration tests cover the native consolidation and log-transition adapters.
-Engine tests cover task cancellation and resource closure after a handler fails;
-broker tests cover exceptional plugin deletion results. Shared offset assertions
-exercise partial success and empty batches against both native and isolated Ursa
-engines. Snapshot tests cover metadata changes and same-name recreation. A proxy
-contract test discovers engine operations, including inherited methods, and
-verifies their classloader context on failure.
+Engine tests cover task cancellation, resource closure after a handler fails,
+extension exposure, and topic-ID preservation in DeleteRecords results. Broker
+tests cover exceptional plugin deletion results and engines without the deletion
+extension. Shared offset assertions exercise partial success and empty batches
+against both native and isolated Ursa engines. Snapshot tests cover metadata
+changes and same-name recreation. Proxy contract tests discover every engine and
+extension operation, including inherited methods, and verify their classloader
+context on failure. A scheduler test checks that plugin tasks run in the plugin
+context and cannot control the broker scheduler lifecycle.
 This is targeted validation, not the full Kafka test suite or a performance
 benchmark.
 

@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine;
+package io.aiven.inkless.engine.builtin;
 
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.protocol.Errors;
@@ -25,11 +25,12 @@ import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.InitDisklessLogProducerState;
 import io.aiven.inkless.control_plane.InitDisklessLogRequest;
 import io.aiven.inkless.control_plane.RepairDisklessLogRequest;
+import io.aiven.inkless.engine.LogTransition;
 
-final class InklessLogTransitionSupport implements LogTransition {
+final class InklessLogTransition implements LogTransition {
     private final ControlPlane controlPlane;
 
-    InklessLogTransitionSupport(ControlPlane controlPlane) {
+    InklessLogTransition(ControlPlane controlPlane) {
         this.controlPlane = controlPlane;
     }
 

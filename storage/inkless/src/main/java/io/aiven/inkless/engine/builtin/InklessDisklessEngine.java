@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine;
+package io.aiven.inkless.engine.builtin;
 
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
@@ -22,6 +22,7 @@ import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPa
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
+import org.apache.kafka.common.requests.DeleteRecordsResponse;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
 import org.apache.kafka.common.utils.Utils;
@@ -36,8 +37,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
@@ -50,17 +49,25 @@ import io.aiven.inkless.delete.DeleteRecordsInterceptor;
 import io.aiven.inkless.delete.FileCleaner;
 import io.aiven.inkless.delete.RetentionEnforcer;
 import io.aiven.inkless.delete.TopicPurger;
+import io.aiven.inkless.engine.DisklessEngine;
+import io.aiven.inkless.engine.DisklessRequestContext;
+import io.aiven.inkless.engine.FetchProbing;
+import io.aiven.inkless.engine.LogTiering;
+import io.aiven.inkless.engine.LogTransition;
+import io.aiven.inkless.engine.RecordDeletion;
 import io.aiven.inkless.produce.AppendHandler;
 
 /** Adapts the existing handlers without changing their storage or scheduling behavior. */
-public final class InklessDisklessEngine implements DisklessEngine {
+public final class InklessDisklessEngine implements DisklessEngine, FetchProbing, RecordDeletion {
     private AppendHandler appendHandler;
     private FetchHandler fetchHandler;
     private FetchOffsetHandler offsetHandler;
 
     private SharedState sharedState;
-    private InklessConsolidationSupport consolidationSupport;
-    private LogTransition logTransitionSupport;
+    private Scheduler scheduler;
+    private long initialTaskDelayMs;
+    private InklessLogTiering logTiering;
+    private LogTransition logTransition;
     private DeleteRecordsInterceptor deleteRecords;
     private RetentionEnforcer retention;
     private FileCleaner cleaner;
@@ -69,14 +76,20 @@ public final class InklessDisklessEngine implements DisklessEngine {
     private boolean started;
     private boolean closed;
 
-    public InklessDisklessEngine(SharedState sharedState, Optional<ConsolidationConfig> consolidation) {
+    /** Takes ownership of the shared state only when construction succeeds. */
+    public InklessDisklessEngine(SharedState sharedState,
+                                 Optional<InklessStorageProvider.ConsolidationConfig> consolidation,
+                                 Scheduler scheduler,
+                                 long initialTaskDelayMs) {
         this.sharedState = sharedState;
+        this.scheduler = scheduler;
+        this.initialTaskDelayMs = initialTaskDelayMs;
         try {
             this.appendHandler = new AppendHandler(sharedState);
             this.fetchHandler = new FetchHandler(sharedState);
             this.offsetHandler = new FetchOffsetHandler(sharedState);
-            this.consolidationSupport = new InklessConsolidationSupport(sharedState, consolidation);
-            this.logTransitionSupport = new InklessLogTransitionSupport(sharedState.controlPlane());
+            this.logTiering = new InklessLogTiering(sharedState, consolidation);
+            this.logTransition = new InklessLogTransition(sharedState.controlPlane());
             this.deleteRecords = new DeleteRecordsInterceptor(sharedState);
             this.retention = new RetentionEnforcer(sharedState);
             this.cleaner = new FileCleaner(sharedState);
@@ -87,95 +100,80 @@ public final class InklessDisklessEngine implements DisklessEngine {
             } catch (IOException closeFailure) {
                 failure.addSuppressed(closeFailure);
             }
-            // Ownership of SharedState transfers only after construction succeeds.
             throw failure;
         }
     }
 
-    public InklessDisklessEngine(SharedState sharedState) {
-        this(sharedState, Optional.empty());
+    InklessDisklessEngine(AppendHandler appendHandler, FetchHandler fetchHandler, FetchOffsetHandler offsetHandler) {
+        this.appendHandler = appendHandler;
+        this.fetchHandler = fetchHandler;
+        this.offsetHandler = offsetHandler;
     }
 
-    public record ConsolidationConfig(int metadataThreads, int dataThreads,
-                                      int requestRateLimit, int maxBatchesPerPartition) { }
-
     @Override
-    public synchronized void start(Scheduler scheduler, long initialDelayMs) {
+    public synchronized void start() {
         if (started || closed) {
             throw new IllegalStateException("Engine already started or closed");
         }
         started = true;
-        tasks.add(scheduler.schedule("inkless-retention-enforcer", retention, initialDelayMs, 500L));
-        schedule(scheduler, "inkless-file-cleaner", cleaner, sharedState.config().fileCleanerInterval().toMillis());
-        schedule(scheduler, "inkless-topic-purger", purger, sharedState.config().topicPurgerInterval().toMillis());
+        tasks.add(scheduler.schedule("inkless-retention-enforcer", retention, initialTaskDelayMs, 500L));
+        schedule("inkless-file-cleaner", cleaner, sharedState.config().fileCleanerInterval().toMillis());
+        schedule("inkless-topic-purger", purger, sharedState.config().topicPurgerInterval().toMillis());
         // Waiting for the broker's default task delay would leave EARLIEST stale after startup.
-        schedule(scheduler, "inkless-cross-tier-log-start-reporter", sharedState.crossTierLogStartReporter(),
+        schedule("inkless-cross-tier-log-start-reporter", sharedState.crossTierLogStartReporter(),
             sharedState.config().crossTierLogStartReportInterval().toMillis());
     }
 
-    private void schedule(Scheduler scheduler, String name, Runnable task, long intervalMs) {
+    private void schedule(String name, Runnable task, long intervalMs) {
         tasks.add(scheduler.schedule(name, task, intervalMs, intervalMs));
     }
 
     @Override
-    public CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>> deleteRecords(
-        Map<TopicPartition, Long> offsets) {
-        var result = new CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>>();
+    public Optional<FetchProbing> fetchProbing() {
+        return Optional.of(this);
+    }
+
+    @Override
+    public Optional<RecordDeletion> recordDeletion() {
+        return Optional.of(this);
+    }
+
+    @Override
+    public Optional<LogTiering> logTiering() {
+        return Optional.ofNullable(logTiering);
+    }
+
+    @Override
+    public Optional<LogTransition> logTransition() {
+        return Optional.ofNullable(logTransition);
+    }
+
+    @Override
+    public CompletableFuture<Map<TopicIdPartition, DeleteRecordsResult>> deleteRecords(Map<TopicIdPartition, Long> offsets) {
+        var byTopicPartition = new LinkedHashMap<TopicPartition, TopicIdPartition>();
+        var nativeOffsets = new LinkedHashMap<TopicPartition, Long>();
+        offsets.forEach((partition, offset) -> {
+            byTopicPartition.put(partition.topicPartition(), partition);
+            nativeOffsets.put(partition.topicPartition(), offset);
+        });
+        var nativeResult = new CompletableFuture<Map<TopicPartition, DeleteRecordsPartitionResult>>();
         try {
-            if (!deleteRecords.intercept(offsets, result::complete)) {
-                result.completeExceptionally(new IllegalArgumentException("Expected diskless partitions"));
+            if (!deleteRecords.intercept(nativeOffsets, nativeResult::complete)) {
+                nativeResult.completeExceptionally(new IllegalArgumentException("Expected diskless partitions"));
             }
         } catch (Exception e) {
-            result.completeExceptionally(e);
+            nativeResult.completeExceptionally(e);
         }
-        return result;
-    }
-
-    @Override
-    public Set<Capability> capabilities() {
-        return Set.of(Capability.DELETE_RECORDS, Capability.FETCH_PROBE,
-            Capability.LOG_TRANSITION, Capability.KAFKA_LOG_TIERING);
-    }
-
-    @Override
-    public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetchForReplication(
-        FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions) {
-        return consolidationSupport.fetch(params, partitions);
-    }
-
-    @Override
-    public OptionalLong remoteLogStartOffset(TopicIdPartition partition) {
-        return consolidationSupport.remoteLogStartOffset(partition);
-    }
-
-    @Override
-    public OptionalLong earliestOffset(TopicIdPartition partition) {
-        return consolidationSupport.earliestOffset(partition);
-    }
-
-    @Override
-    public Map<TopicIdPartition, OffsetResult> advanceEarliestOffsets(Map<TopicIdPartition, Long> offsets) {
-        return consolidationSupport.advanceEarliestOffsets(offsets);
-    }
-
-    @Override
-    public void reportRemoteLogStartOffset(TopicPartition partition, long offset) {
-        consolidationSupport.reportRemoteLogStartOffset(partition, offset);
-    }
-
-    @Override
-    public Map<TopicIdPartition, OffsetResult> reclaimReplicatedRecords(Map<TopicIdPartition, Long> offsets) {
-        return consolidationSupport.reclaimReplicatedRecords(offsets);
-    }
-
-    @Override
-    public List<Errors> initializeLogs(List<LogInitialization> requests) {
-        return logTransitionSupport.initializeLogs(requests);
-    }
-
-    @Override
-    public Errors repairLog(TopicIdPartition partition, long startOffset) {
-        return logTransitionSupport.repairLog(partition, startOffset);
+        return nativeResult.thenApply(results -> {
+            var converted = new LinkedHashMap<TopicIdPartition, DeleteRecordsResult>();
+            byTopicPartition.forEach((topicPartition, partition) -> {
+                var result = results.get(topicPartition);
+                converted.put(partition, result == null
+                    ? new DeleteRecordsResult(Errors.UNKNOWN_SERVER_ERROR, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+                    : new DeleteRecordsResult(Errors.forCode(result.errorCode()), result.lowWatermark()));
+            });
+            return converted;
+        });
     }
 
     @Override
@@ -206,12 +204,6 @@ public final class InklessDisklessEngine implements DisklessEngine {
                 response.highWatermark(), response.estimatedByteSize(request.offset())));
         }
         return result;
-    }
-
-    InklessDisklessEngine(AppendHandler appendHandler, FetchHandler fetchHandler, FetchOffsetHandler offsetHandler) {
-        this.appendHandler = appendHandler;
-        this.fetchHandler = fetchHandler;
-        this.offsetHandler = offsetHandler;
     }
 
     @Override
@@ -271,7 +263,7 @@ public final class InklessDisklessEngine implements DisklessEngine {
     }
 
     private void closeComponents() throws IOException {
-        Utils.closeAll(appendHandler, fetchHandler, offsetHandler, consolidationSupport,
+        Utils.closeAll(appendHandler, fetchHandler, offsetHandler, logTiering,
             retention, cleaner, purger, deleteRecords);
     }
 }

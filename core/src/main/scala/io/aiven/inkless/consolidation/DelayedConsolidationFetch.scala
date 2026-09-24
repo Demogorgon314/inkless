@@ -19,7 +19,7 @@
 package io.aiven.inkless.consolidation
 
 import io.aiven.inkless.engine.Fetcher
-import io.aiven.inkless.engine.Fetcher.FetchProbe
+import io.aiven.inkless.engine.FetchProbing.FetchProbe
 import kafka.server.ReplicaManager
 import kafka.utils.Logging
 import org.apache.kafka.common.TopicIdPartition

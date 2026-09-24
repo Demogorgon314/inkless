@@ -27,7 +27,6 @@ import org.apache.kafka.server.storage.log.FetchPartitionData;
 import org.apache.kafka.storage.diskless.DisklessStorageEngine;
 import org.apache.kafka.storage.diskless.ListOffsetsPartitionRequest;
 import org.apache.kafka.storage.diskless.ListOffsetsPartitionResponse;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.IOException;
 import java.util.Map;
@@ -47,14 +46,12 @@ public class UrsaStorageEngineImpl implements DisklessStorageEngine {
             Time time,
             int brokerId,
             UrsaStorageConfig config,
-            BrokerTopicStats brokerTopicStats,
-            Map<String, Object> logConfigDefaults,
+            Supplier<Map<String, ?>> logConfigDefaults,
             Supplier<DisklessMetadataSnapshot> metadata) {
         this.state = new UrsaStorageState(
                 time,
                 brokerId,
                 config,
-                brokerTopicStats,
                 logConfigDefaults,
                 metadata
         );

@@ -18,10 +18,9 @@ package kafka.server
 
 import com.yammer.metrics.core.Meter
 import io.aiven.inkless.consume.ConcatenatedRecords
-import io.aiven.inkless.engine.{DisklessEngine, DisklessRequestContext}
-import io.aiven.inkless.engine.Fetcher.{FetchAvailability, FetchProbe}
+import io.aiven.inkless.engine.{DisklessEngine, DisklessRequestContext, FetchProbing, LogTiering, LogTransition, OffsetReader, RecordDeletion}
+import io.aiven.inkless.engine.FetchProbing.{FetchAvailability, FetchProbe}
 import io.aiven.inkless.engine.LogTransition.ProducerState
-import io.aiven.inkless.engine.DisklessEngine.Capability
 import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, ConsolidationFetcherManager, ConsolidationMetrics, ConsolidationReconciler, DelayedConsolidationFetch}
 import kafka.cluster.Partition
 import kafka.log.LogManager
@@ -263,11 +262,11 @@ class ReplicaManager(val config: KafkaConfig,
       "ConsolidationFetch", config.brokerId, 0)
 
   private val _inklessMetadataView: InklessMetadataView = inklessMetadataView.getOrElse(new InklessMetadataView(metadataCache.asInstanceOf[KRaftMetadataCache], () => config.extractLogConfigMap))
-  private val tieringEngine = disklessEngine.filter(_.capabilities().contains(Capability.KAFKA_LOG_TIERING))
-  private val deletingEngine = disklessEngine.filter(_.capabilities().contains(Capability.DELETE_RECORDS))
-  private val probingEngine = disklessEngine.filter(_.capabilities().contains(Capability.FETCH_PROBE))
-  private val transitionEngine = disklessEngine.filter(_.capabilities().contains(Capability.LOG_TRANSITION))
-  private def newDisklessOffsetJob(engine: DisklessEngine): DisklessOffsetJob =
+  private val logTiering: Option[LogTiering] = disklessEngine.flatMap(_.logTiering().toScala)
+  private val recordDeletion: Option[RecordDeletion] = disklessEngine.flatMap(_.recordDeletion().toScala)
+  private val fetchProbing: Option[FetchProbing] = disklessEngine.flatMap(_.fetchProbing().toScala)
+  private val logTransition: Option[LogTransition] = disklessEngine.flatMap(_.logTransition().toScala)
+  private def newDisklessOffsetJob(engine: OffsetReader): DisklessOffsetJob =
     new DisklessOffsetJob(engine, _inklessMetadataView)
 
   private val disklessFetchOffsetRouter = new DisklessFetchOffsetRouter(
@@ -279,11 +278,11 @@ class ReplicaManager(val config: KafkaConfig,
   // --- Diskless Partition Consolidation Fields ---
   private val inklessConsolidatedDisklessLogPruner: Option[ConsolidatedDisklessLogPruner] =
     if (config.disklessRemoteStorageConsolidationEnabled)
-      tieringEngine.map(storage => new ConsolidatedDisklessLogPruner(this, _inklessMetadataView, storage))
+      logTiering.map(tiering => new ConsolidatedDisklessLogPruner(this, _inklessMetadataView, tiering))
     else
       None
   private val consolidationMetrics: Option[ConsolidationMetrics] =
-    if (config.disklessRemoteStorageConsolidationEnabled && tieringEngine.isDefined)
+    if (config.disklessRemoteStorageConsolidationEnabled && logTiering.isDefined)
       Some(new ConsolidationMetrics())
     else
       None
@@ -298,16 +297,16 @@ class ReplicaManager(val config: KafkaConfig,
     if (config.disklessRemoteStorageConsolidationEnabled) {
       // consolidationQuotaManager is unconditionally Some(...) under this same flag (unlike the
       // storage services, which depend on the engine), so it needs no emptiness check here.
-      if (tieringEngine.isEmpty) {
-        throw new KafkaException("Remote storage consolidation requires the engine capability KAFKA_LOG_TIERING")
+      if (logTiering.isEmpty) {
+        throw new KafkaException("Remote storage consolidation requires an engine that supports log tiering")
       }
-      tieringEngine.zip(consolidationQuotaManager)
-        .map { case (engine, quotaMgr) =>
+      disklessEngine.zip(logTiering).zip(consolidationQuotaManager)
+        .map { case ((engine, tiering), quotaMgr) =>
           new ConsolidationFetcherManager(
             config,
             this,
             quotaMgr,
-            (params, partitions) => engine.fetchForReplication(params, partitions),
+            (params, partitions) => tiering.fetchForReplication(params, partitions),
             () => newDisklessOffsetJob(engine),
             consolidationMetrics
           )
@@ -477,7 +476,7 @@ class ReplicaManager(val config: KafkaConfig,
     addPartitionsToTxnManager.foreach(_.start())
     remoteLogManager.foreach(rlm => rlm.setDelayedOperationPurgatory(delayedRemoteListOffsetsPurgatory))
 
-    disklessEngine.foreach(_.start(scheduler, config.logInitialTaskDelayMs))
+    disklessEngine.foreach(_.start())
     inklessConsolidatedDisklessLogPruner.foreach { pruner =>
       val intervalMs = config.inklessConfig.consolidationCleanupInterval().toMillis
       scheduler.schedule("inkless-consolidated-diskless-log-pruner", () => pruner.run(), intervalMs, intervalMs)
@@ -1547,7 +1546,7 @@ class ReplicaManager(val config: KafkaConfig,
     }.toMap
     val disklessDeleteRecordsRequested = disklessStartOffsetPerPartition.nonEmpty
 
-    val failedDisklessDeleteRecords = if (disklessDeleteRecordsRequested && deletingEngine.isEmpty) {
+    val failedDisklessDeleteRecords = if (disklessDeleteRecordsRequested && recordDeletion.isEmpty) {
       error(s"Cannot delete records from diskless partitions ${disklessStartOffsetPerPartition.keys.mkString(", ")}: the engine does not support DeleteRecords")
       disklessStartOffsetPerPartition.keys.map { topicPartition =>
         topicPartition -> new DeleteRecordsPartitionResult()
@@ -1656,17 +1655,30 @@ class ReplicaManager(val config: KafkaConfig,
       if (disklessOffsetsAfterLocalDelete.isEmpty) {
         finalizeCrossTierAndRespond(localResponse ++ failedDisklessDeleteRecords)
       } else {
-        deletingEngine.get.deleteRecords(
-          disklessOffsetsAfterLocalDelete.view.mapValues(java.lang.Long.valueOf).toMap.asJava
-        ).whenComplete { (results, failure) =>
-          val response = if (failure == null) results.asScala.toMap else {
-            disklessOffsetsAfterLocalDelete.keys.map { tp =>
-              tp -> new DeleteRecordsPartitionResult().setPartitionIndex(tp.partition)
-                .setLowWatermark(DeleteRecordsResponse.INVALID_LOW_WATERMARK)
-                .setErrorCode(Errors.forException(failure).code)
+        def partitionResult(tp: TopicPartition, error: Errors, lowWatermark: Long): DeleteRecordsPartitionResult =
+          new DeleteRecordsPartitionResult().setPartitionIndex(tp.partition)
+            .setLowWatermark(lowWatermark).setErrorCode(error.code)
+        val requests = new util.LinkedHashMap[TopicIdPartition, java.lang.Long]()
+        val unresolved = mutable.Map.empty[TopicPartition, DeleteRecordsPartitionResult]
+        disklessOffsetsAfterLocalDelete.foreach { case (tp, offset) =>
+          val topicId = _inklessMetadataView.getTopicId(tp.topic)
+          if (topicId == null || topicId == Uuid.ZERO_UUID)
+            unresolved += tp -> partitionResult(tp, Errors.UNKNOWN_TOPIC_OR_PARTITION, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+          else
+            requests.put(new TopicIdPartition(topicId, tp), offset)
+        }
+        recordDeletion.get.deleteRecords(requests).whenComplete { (results, failure) =>
+          val response = if (failure == null) {
+            results.asScala.map { case (partition, result) =>
+              partition.topicPartition -> partitionResult(partition.topicPartition, result.error, result.lowWatermark)
+            }.toMap
+          } else {
+            requests.keySet.asScala.map { partition =>
+              partition.topicPartition -> partitionResult(partition.topicPartition, Errors.forException(failure),
+                DeleteRecordsResponse.INVALID_LOW_WATERMARK)
             }.toMap
           }
-          finalizeCrossTierAndRespond(localResponse ++ failedDisklessDeleteRecords ++ response)
+          finalizeCrossTierAndRespond(localResponse ++ failedDisklessDeleteRecords ++ unresolved ++ response)
         }
       }
     }
@@ -1770,7 +1782,7 @@ class ReplicaManager(val config: KafkaConfig,
     response: Map[TopicPartition, DeleteRecordsPartitionResult],
     offsetPerPartition: Map[TopicPartition, Long]
   ): Map[TopicPartition, DeleteRecordsPartitionResult] = {
-    val storage = tieringEngine.orNull
+    val storage = logTiering.orNull
     if (storage == null) {
       return Map.empty
     }
@@ -1827,8 +1839,19 @@ class ReplicaManager(val config: KafkaConfig,
    * broker-local log start, which on a rebuilt leader can sit above the true cross-tier earliest (at the
    * seal for a switched partition). Mirrors the guard in [[crossTierRemoteLogStartOffset]] so the two agree.
    */
+  /**
+   * Persists the leader's remote log start so any broker can serve ListOffsets(EARLIEST) for a
+   * consolidating diskless partition. The engine ignores partitions that are not consolidating.
+   */
+  def reportDisklessRemoteLogStartOffset(topicPartition: TopicPartition, remoteLogStartOffset: Long): Unit =
+    logTiering.foreach { tiering =>
+      val topicId = _inklessMetadataView.getTopicId(topicPartition.topic)
+      if (topicId != null && topicId != Uuid.ZERO_UUID)
+        tiering.reportRemoteLogStartOffset(new TopicIdPartition(topicId, topicPartition), remoteLogStartOffset)
+    }
+
   def isConsolidatingDisklessPartition(topicPartition: TopicPartition): Boolean =
-    tieringEngine.isDefined && _inklessMetadataView.isConsolidatingDisklessTopic(topicPartition.topic)
+    logTiering.isDefined && _inklessMetadataView.isConsolidatingDisklessTopic(topicPartition.topic)
 
   /**
    * The raw cross-tier remote log start (`logs.remote_log_start_offset`) for a consolidating diskless
@@ -1847,7 +1870,7 @@ class ReplicaManager(val config: KafkaConfig,
    * ListOffsets(EARLIEST) read-throughs and can therefore hold a COALESCE'd frontier value.
    */
   def crossTierRemoteLogStartOffset(topicPartition: TopicPartition): OptionalLong = {
-    val storage = tieringEngine.orNull
+    val storage = logTiering.orNull
     if (storage == null || !_inklessMetadataView.isConsolidatingDisklessTopic(topicPartition.topic)) {
       return OptionalLong.empty()
     }
@@ -1912,7 +1935,7 @@ class ReplicaManager(val config: KafkaConfig,
    * the hit; a stale entry can only be too low (safe: under-reclaims/over-serves).
    */
   def crossTierEarliestOffset(topicPartition: TopicPartition): OptionalLong = {
-    val storage = tieringEngine.orNull
+    val storage = logTiering.orNull
     if (storage == null || !_inklessMetadataView.isConsolidatingDisklessTopic(topicPartition.topic)) {
       return OptionalLong.empty()
     }
@@ -2257,7 +2280,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   /** Best-effort readiness hints; empty means the engine requires asynchronous fetch. */
   def probeDisklessFetch(requests: Seq[FetchProbe]): Option[util.List[FetchAvailability]] =
-    probingEngine.map(_.probeFetch(requests.asJava))
+    fetchProbing.map(_.probeFetch(requests.asJava))
 
   /**
    * Serves the diskless leg of a fetch.
@@ -4030,7 +4053,7 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def repairDisklessLog(topicPartition: TopicPartition): Errors = {
-    val storage = transitionEngine.getOrElse {
+    val storage = logTransition.getOrElse {
       return Errors.INVALID_REQUEST
     }
     if (!_inklessMetadataView.isDisklessTopic(topicPartition.topic)) {

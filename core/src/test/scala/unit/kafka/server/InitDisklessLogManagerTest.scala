@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.DisklessEngine
+import io.aiven.inkless.engine.LogTransition
 import io.aiven.inkless.engine.LogTransition.{ProducerState}
 import kafka.cluster.Partition
 import org.apache.kafka.clients.ClientResponse
@@ -51,7 +51,7 @@ class InitDisklessLogManagerTest {
   private val tp0 = new TopicPartition("test-topic", 0)
 
   private var channelManager: MockInitDisklessLogChannelManager = _
-  private var controlPlane: DisklessEngine = _
+  private var controlPlane: LogTransition = _
   private var mockTime: MockTime = _
   private var scheduler: MockScheduler = _
   private var manager: InitDisklessLogManager = _
@@ -60,7 +60,7 @@ class InitDisklessLogManagerTest {
   @BeforeEach
   def setUp(): Unit = {
     channelManager = new MockInitDisklessLogChannelManager()
-    controlPlane = mock(classOf[DisklessEngine])
+    controlPlane = mock(classOf[LogTransition])
     mockTime = new MockTime()
     scheduler = new MockScheduler(mockTime)
     listenersByTp = mutable.Map.empty
