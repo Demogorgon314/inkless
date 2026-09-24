@@ -37,6 +37,8 @@ core/src/main/java/kafka/server/DisklessBrokerTopicMetrics.java   @aiven/inkless
 core/src/main/java/kafka/server/diskless/**                        @aiven/inkless  # provider loader and class-loader isolation
 core/src/test/java/kafka/server/diskless/**                        @aiven/inkless
 core/src/test/scala/unit/kafka/server/InklessEngineTestSupport.scala  @aiven/inkless
+core/src/test/scala/unit/kafka/server/DisklessFetchPlannerTest.scala  @aiven/inkless
+core/src/test/scala/unit/kafka/server/DisklessDeleteRecordsTest.scala  @aiven/inkless
 core/src/test/scala/kafka/server/metadata/KafkaDisklessTopicViewTest.scala  @aiven/inkless
 core/src/main/java/kafka/server/metadata/DisklessTopicView.java   @aiven/inkless  # Kafka-owned diskless topic view used for routing
 core/src/main/scala/kafka/server/metadata/KafkaDisklessTopicView.scala  @aiven/inkless

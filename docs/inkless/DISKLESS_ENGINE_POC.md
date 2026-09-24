@@ -113,6 +113,26 @@ Kafka coordination paths; this refactor does not make that claim. Ursa exposes
 no extensions. Its own compaction does not implement the Kafka log tiering
 protocol.
 
+## Kafka-side routing helpers
+
+`ReplicaManager` delegates diskless routing decisions to helpers that depend only
+on `DisklessTopicView`, partition lookups, and engine extensions, so upstream
+syncs touch fewer diskless lines:
+
+- `DisklessFetchPlanner`: Routes each fetched partition to the local log, the
+  engine, or an immediate response, based on the switch seal, the consolidating
+  local tier, and managed replicas. It also restores legacy zero-UUID partition
+  keys in the response.
+- `DisklessDeleteRecords`: Splits DeleteRecords into local and engine legs at the
+  seal or the local log end, runs the engine leg through `RecordDeletion`, and
+  advances the cross-tier earliest through `LogTiering`.
+- `DisklessFetchOffsetRouter`: Routes ListOffsets between the local log and the
+  engine.
+
+Switch reconciliation, follower truncation at the seal, and OffsetsForLeaderEpoch
+routing stay in `ReplicaManager` because they operate on local `Partition` and log
+state that the replication path owns.
+
 ## Kafka-owned metadata and shared resources
 
 Kafka routing reads diskless topic state through `DisklessTopicView`, a

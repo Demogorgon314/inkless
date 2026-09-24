@@ -38,7 +38,7 @@ import org.apache.kafka.common.message.ListOffsetsResponseData.{ListOffsetsParti
 import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.{OffsetForLeaderPartition, OffsetForLeaderTopic}
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.{EpochEndOffset, OffsetForLeaderTopicResult}
 import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse
-import org.apache.kafka.common.message.{DescribeLogDirsResponseData, DescribeProducersResponseData, FetchResponseData}
+import org.apache.kafka.common.message.{DescribeLogDirsResponseData, DescribeProducersResponseData}
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.Errors
@@ -92,7 +92,6 @@ import scala.collection.{Map, Seq, Set, immutable, mutable}
 import scala.jdk.CollectionConverters._
 import scala.jdk.FunctionConverters.enrichAsJavaConsumer
 import scala.jdk.OptionConverters.RichOptional
-import scala.util.control.NonFatal
 
 object ReplicaManager {
   val HighWatermarkFilename = "replication-offset-checkpoint"
@@ -414,6 +413,12 @@ class ReplicaManager(val config: KafkaConfig,
     metricsGroup.newMeter(ConsolidationHighWatermarkLagFetchRateMetricName, "fetches", TimeUnit.SECONDS)
   private val disklessSwitchedPrefixMissingFetchRate: Meter =
     metricsGroup.newMeter(DisklessSwitchedPrefixMissingFetchRateMetricName, "fetches", TimeUnit.SECONDS)
+  // Built per request: partition lookups must reach this instance, which tests replace with a spy.
+  private def disklessFetchPlanner = new DisklessFetchPlanner(_disklessTopicView, getPartitionOrError,
+    crossTierEarliestOffset, consolidationActiveFor, disklessEngine.isDefined, config.disklessManagedReplicasEnabled,
+    time, disklessSwitchedPrefixMissingFetchRate, consolidationHighWatermarkLagFetchRate)
+  private def disklessDeleteRecords = new DisklessDeleteRecords(_disklessTopicView, recordDeletion, logTiering,
+    getPartitionOrError, config.disklessRemoteStorageConsolidationEnabled)
 
   /**
    * Returns true when this broker consolidates the topic: the feature is enabled here and the topic
@@ -1536,106 +1541,14 @@ class ReplicaManager(val config: KafkaConfig,
                     responseCallback: Map[TopicPartition, DeleteRecordsPartitionResult] => Unit,
                     allowInternalTopicDeletion: Boolean = false): Unit = {
 
-    val disklessStartOffsetPerPartition = offsetPerPartition.keys.flatMap { topicPartition =>
-      if (_disklessTopicView.isDisklessTopic(topicPartition.topic)) {
-        Some(topicPartition -> _disklessTopicView.getClassicToDisklessStartOffset(topicPartition))
-      } else {
-        None
-      }
-    }.toMap
-    val disklessDeleteRecordsRequested = disklessStartOffsetPerPartition.nonEmpty
-
-    val failedDisklessDeleteRecords = if (disklessDeleteRecordsRequested && recordDeletion.isEmpty) {
-      error(s"Cannot delete records from diskless partitions ${disklessStartOffsetPerPartition.keys.mkString(", ")}: the engine does not support DeleteRecords")
-      disklessStartOffsetPerPartition.keys.map { topicPartition =>
-        topicPartition -> new DeleteRecordsPartitionResult()
-          .setPartitionIndex(topicPartition.partition)
-          .setLowWatermark(DeleteRecordsResponse.INVALID_LOW_WATERMARK)
-          .setErrorCode(Errors.UNKNOWN_SERVER_ERROR.code)
-      }.toMap
-    } else {
-      Map.empty[TopicPartition, DeleteRecordsPartitionResult]
-    }
-
-    val localOffsetPerPartition = mutable.Map.empty[TopicPartition, Long]
-    val disklessOffsetPerPartition = mutable.Map.empty[TopicPartition, Long]
-    val hybridDisklessPartitions = mutable.Set.empty[TopicPartition]
-
-    if (disklessDeleteRecordsRequested) {
-      offsetPerPartition.filterNot { case (topicPartition, _) =>
-        failedDisklessDeleteRecords.contains(topicPartition)
-      }.foreach { case (topicPartition, requestedOffset) =>
-        disklessStartOffsetPerPartition.get(topicPartition) match {
-          case Some(classicToDisklessStartOffset) if classicToDisklessStartOffset >= 0 =>
-            // partition switched from classic to diskless
-            val needsDisklessDelete = requestedOffset == DeleteRecordsRequest.HIGH_WATERMARK ||
-              requestedOffset > classicToDisklessStartOffset
-            val localOffset = if (needsDisklessDelete && requestedOffset != DeleteRecordsRequest.HIGH_WATERMARK) {
-              classicToDisklessStartOffset
-            } else {
-              requestedOffset
-            }
-            localOffsetPerPartition += topicPartition -> localOffset
-            if (needsDisklessDelete) {
-              disklessOffsetPerPartition += topicPartition -> requestedOffset
-              hybridDisklessPartitions += topicPartition
-            }
-          case Some(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING) =>
-            // partition not switched yet to diskless: data is only available in local log
-            localOffsetPerPartition += topicPartition -> requestedOffset
-          case Some(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-            if config.disklessRemoteStorageConsolidationEnabled &&
-              _disklessTopicView.isConsolidatingDisklessTopic(topicPartition.topic) =>
-            getPartitionOrError(topicPartition) match {
-              case Right(partition) =>
-                partition.log match {
-                  case Some(log) =>
-                    // consolidating diskless partition with local data
-                    val localLogEndOffset = log.logEndOffset
-                    val needsDisklessDelete = requestedOffset == DeleteRecordsRequest.HIGH_WATERMARK ||
-                      requestedOffset > localLogEndOffset
-                    val localOffset = if (needsDisklessDelete && requestedOffset != DeleteRecordsRequest.HIGH_WATERMARK) {
-                      localLogEndOffset
-                    } else {
-                      requestedOffset
-                    }
-                    localOffsetPerPartition += topicPartition -> localOffset
-                    if (needsDisklessDelete) {
-                      disklessOffsetPerPartition += topicPartition -> requestedOffset
-                      hybridDisklessPartitions += topicPartition
-                    }
-                  case None =>
-                    // consolidating partition has no local log, so only diskless data can be deleted
-                    disklessOffsetPerPartition += topicPartition -> requestedOffset
-                }
-              case Left(error) =>
-                // cannot inspect the local log, no local component to delete, treat as pure-diskless
-                disklessOffsetPerPartition += topicPartition -> requestedOffset
-                warn(s"Cannot find local partition for consolidating diskless topic " +
-                  s"${topicPartition}, routing delete exclusively to diskless. Error: $error")
-            }
-          case Some(_) =>
-            // pure-diskless partition
-            disklessOffsetPerPartition += topicPartition -> requestedOffset
-          case None =>
-            // classic partition
-            localOffsetPerPartition += topicPartition -> requestedOffset
-        }
-      }
-    } else {
-      // No diskless partitions are present, so keep the existing local delete path.
-      localOffsetPerPartition ++= offsetPerPartition
-    }
-
-    // Convert to immutable before passing to the async closure to prevent accidental mutation.
-    val immutableDisklessOffsets = disklessOffsetPerPartition.toMap
-    val immutableHybridPartitions = hybridDisklessPartitions.toSet
+    val diskless = disklessDeleteRecords
+    val plan = diskless.split(offsetPerPartition)
 
     // Report the cross-tier earliest of successfully-deleted consolidating diskless partitions to the
     // control plane and use it as their low watermark, so any broker (leader or the follower the
     // metadata transformer routes clients to) returns the same value as ListOffsets(EARLIEST).
     def finalizeCrossTierAndRespond(response: Map[TopicPartition, DeleteRecordsPartitionResult]): Unit = {
-      val advanced = advanceCrossTierEarliestForDeleteRecords(response, offsetPerPartition)
+      val advanced = diskless.advanceCrossTierEarliest(response, offsetPerPartition)
       if (advanced.isEmpty) {
         responseCallback(response)
       } else {
@@ -1646,42 +1559,16 @@ class ReplicaManager(val config: KafkaConfig,
     }
 
     def maybeDeleteFromDiskless(localResponse: Map[TopicPartition, DeleteRecordsPartitionResult]): Unit = {
-      // Keep pure diskless partitions and only the hybrid partitions whose local phase succeeded.
-      val disklessOffsetsAfterLocalDelete = immutableDisklessOffsets.filterNot { case (topicPartition, _) =>
-        immutableHybridPartitions.contains(topicPartition) &&
-          localResponse.get(topicPartition).exists(_.errorCode != Errors.NONE.code)
-      }
-      if (disklessOffsetsAfterLocalDelete.isEmpty) {
-        finalizeCrossTierAndRespond(localResponse ++ failedDisklessDeleteRecords)
+      val disklessOffsets = plan.disklessAfterLocal(localResponse)
+      if (disklessOffsets.isEmpty) {
+        finalizeCrossTierAndRespond(localResponse ++ plan.failed)
       } else {
-        def partitionResult(tp: TopicPartition, error: Errors, lowWatermark: Long): DeleteRecordsPartitionResult =
-          new DeleteRecordsPartitionResult().setPartitionIndex(tp.partition)
-            .setLowWatermark(lowWatermark).setErrorCode(error.code)
-        val requests = new util.LinkedHashMap[TopicIdPartition, java.lang.Long]()
-        val unresolved = mutable.Map.empty[TopicPartition, DeleteRecordsPartitionResult]
-        disklessOffsetsAfterLocalDelete.foreach { case (tp, offset) =>
-          val topicId = _disklessTopicView.getTopicId(tp.topic)
-          if (topicId == null || topicId == Uuid.ZERO_UUID)
-            unresolved += tp -> partitionResult(tp, Errors.UNKNOWN_TOPIC_OR_PARTITION, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
-          else
-            requests.put(new TopicIdPartition(topicId, tp), offset)
-        }
-        recordDeletion.get.deleteRecords(requests).whenComplete { (results, failure) =>
-          val response = if (failure == null) {
-            results.asScala.map { case (partition, result) =>
-              partition.topicPartition -> partitionResult(partition.topicPartition, result.error, result.lowWatermark)
-            }.toMap
-          } else {
-            requests.keySet.asScala.map { partition =>
-              partition.topicPartition -> partitionResult(partition.topicPartition, Errors.forException(failure),
-                DeleteRecordsResponse.INVALID_LOW_WATERMARK)
-            }.toMap
-          }
-          finalizeCrossTierAndRespond(localResponse ++ failedDisklessDeleteRecords ++ unresolved ++ response)
-        }
+        diskless.deleteFromEngine(disklessOffsets, engineResponse =>
+          finalizeCrossTierAndRespond(localResponse ++ plan.failed ++ engineResponse))
       }
     }
 
+    val localOffsetPerPartition = plan.local
     if (localOffsetPerPartition.isEmpty) {
       maybeDeleteFromDiskless(Map.empty)
       return
@@ -1759,74 +1646,6 @@ class ReplicaManager(val config: KafkaConfig,
       // we can respond immediately
       val deleteRecordsResponseStatus = deleteRecordsStatus.map { case (k, status) => k -> status.responseStatus }
       maybeDeleteFromDiskless(deleteRecordsResponseStatus ++ crossTierResponseStatus)
-    }
-  }
-
-  /**
-   * For every successfully-deleted consolidating diskless partition in `response`, advance the
-   * control-plane cross-tier earliest (`remote_log_start_offset`) to the requested delete offset and
-   * return a replacement result whose low watermark is the stored value. `EARLIEST` is
-   * `COALESCE(remote_log_start_offset, log_start_offset)`, so reporting the just-advanced (non-null)
-   * `remote_log_start_offset` keeps the DeleteRecords low watermark and a subsequent
-   * `ListOffsets(EARLIEST)` in agreement on every broker.
-   *
-   * Physical deletion is unchanged: the diskless WAL objects are freed by `delete_records_v1` +
-   * `FileCleaner`, and the remote-tier segments by the leader's `RemoteLogManager` (driven by the
-   * leader's local `logStartOffset`); this method only moves the logical earliest pointer.
-   *
-   * Returns the replacement results keyed by partition (empty when nothing applies). The control-plane
-   * call is synchronous; `DeleteRecords` is an infrequent admin operation.
-   */
-  private def advanceCrossTierEarliestForDeleteRecords(
-    response: Map[TopicPartition, DeleteRecordsPartitionResult],
-    offsetPerPartition: Map[TopicPartition, Long]
-  ): Map[TopicPartition, DeleteRecordsPartitionResult] = {
-    val storage = logTiering.orNull
-    if (storage == null) {
-      return Map.empty
-    }
-
-    // Convert each delete offset: use the requested offset, or the leg's returned low watermark when
-    // the request was HIGH_WATERMARK (which always reaches the WAL, so the diskless leg ran).
-    val requests = new java.util.LinkedHashMap[TopicIdPartition, java.lang.Long]()
-    val partitionsInOrder = mutable.ArrayBuffer.empty[TopicPartition]
-    response.foreach { case (topicPartition, result) =>
-      // Non-consolidating partitions and errors will be skipped here as they're handled in the caller
-      // finalizeCrossTierAndRespond by returning their original response.
-      if (result.errorCode == Errors.NONE.code &&
-        _disklessTopicView.isConsolidatingDisklessTopic(topicPartition.topic)) {
-        val requested = offsetPerPartition.getOrElse(topicPartition, DeleteRecordsRequest.HIGH_WATERMARK)
-        val convertedOffset = if (requested == DeleteRecordsRequest.HIGH_WATERMARK) result.lowWatermark else requested
-        val topicId = _disklessTopicView.getTopicId(topicPartition.topic)
-        if (convertedOffset >= 0 && topicId != null && !topicId.equals(Uuid.ZERO_UUID)) {
-          partitionsInOrder += topicPartition
-          requests.put(new TopicIdPartition(topicId, topicPartition), convertedOffset)
-        }
-      }
-    }
-
-    if (requests.isEmpty) {
-      return Map.empty
-    }
-
-    try {
-      val responses = storage.advanceEarliestOffsets(requests)
-      val replacements = mutable.Map.empty[TopicPartition, DeleteRecordsPartitionResult]
-      responses.asScala.foreach { case (partition, result) =>
-        if (result.error() == Errors.NONE && result.offset() >= 0) {
-          replacements += partition.topicPartition() -> new DeleteRecordsPartitionResult()
-            .setPartitionIndex(partition.partition()).setLowWatermark(result.offset()).setErrorCode(Errors.NONE.code)
-        }
-      }
-      replacements.toMap
-    } catch {
-      case e: Exception =>
-        // Catch only Exception, not Throwable: control-plane failures are ControlPlaneException (a
-        // RuntimeException), but Errors (e.g. OutOfMemoryError) must propagate rather than fail open.
-        // Reporting failure must not fail the delete (the data is already deleted); leave the per-leg
-        // low watermark in place and let the RLM's own report reconcile the control plane later.
-        error(s"Failed to advance cross-tier log start offset for ${partitionsInOrder.mkString(", ")}", e)
-        Map.empty
     }
   }
 
@@ -2433,260 +2252,13 @@ class ReplicaManager(val config: KafkaConfig,
       return
     }
 
-    val disklessFetchInfos = new mutable.ArrayBuffer[(TopicIdPartition, PartitionData)]()
-    val classicFetchInfos = new mutable.ArrayBuffer[(TopicIdPartition, PartitionData)]()
-    val immediateFetchResponses = new mutable.ArrayBuffer[(TopicIdPartition, FetchPartitionData)]()
-    // Legacy fetch versions (<13) omit the topic ID, so the request keys this partition with
-    // Uuid.ZERO_UUID. maybeBackfillDisklessTopicId resolves the real topic ID for the diskless
-    // read below, but the fetch session was built from the original (zero-UUID) request key. Track
-    // the substitution here so respond() can restore the client's original partition identity,
-    // keeping the fetch session lookup (FetchSession.scala) able to find its request data.
-    val disklessTopicIdOverrides = new mutable.HashMap[TopicIdPartition, TopicIdPartition]()
-    // Consolidating partitions served from local log that may need a diskless supplement.
-    // Maps tp -> logEndOffset (the offset where the diskless supplement should start).
-    val consolidatingLocalFetchSupplements = new mutable.HashMap[TopicIdPartition, Long]()
+    val plan = disklessFetchPlanner.plan(params, fetchInfos)
+    val disklessFetchInfos = plan.diskless
+    val classicFetchInfos = plan.classic
+    val consolidatingLocalFetchSupplements = plan.consolidatingSupplements
 
-    fetchInfos.foreach { fetchInfo =>
-      val (tp, fetchPartitionData) = fetchInfo
-      val isDiskless = _disklessTopicView.isDisklessTopic(tp.topic)
-      var partitionLookupFailed = false
-      if (!isDiskless) {
-        classicFetchInfos += fetchInfo
-      } else {
-        val classicToDisklessStartOffset = _disklessTopicView.getClassicToDisklessStartOffset(tp.topicPartition())
-        // partitions with switching in progress should always serve from local log
-        var shouldReadFromUnifiedLog = classicToDisklessStartOffset == PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING
-        if (consolidationActiveFor(tp.topic)) {
-          getPartitionOrError(tp.topicPartition) match {
-            case Right(partition) =>
-              // Deref partition.log once: it is swapped on log recreation and dir change, so
-              // separate derefs can mix offsets from two different logs. The offsets below are still
-              // read one at a time, and the consolidation fetcher can append between them. Read the
-              // high watermark before LEO so that skew can only fail the supplement gate below, never
-              // pass it on a stale anchor.
-              val localLog = partition.log
-              val localHighWatermark = localLog.map(_.highWatermark).getOrElse(0L)
-              val logEndOffset = localLog.map(_.logEndOffset).getOrElse(0L)
-              val localLogStartOffset = localLog.map(_.localLogStartOffset).getOrElse(0L)
-              // Where the local read stops. Consumers are bounded by the high watermark because an
-              // AZ-local replica may have appended data which is not fetchable yet. Followers and
-              // future replicas are bounded by LEO, since LOG_END isolation permits them to
-              // replicate the uncommitted suffix. A read_committed consumer stops at the last stable
-              // offset instead, which this does not model: diskless carries no transactional data and
-              // the switch aborts undecided transactions, so no consolidating partition has an
-              // LSO below its high watermark. Derive the bound from params.isolation if that changes.
-              val localReadFrontier =
-                if (params.isFromConsumer) localHighWatermark else logEndOffset
-              // Two ranges must stay on the local read path even when they sit above the isolation
-              // frontier, because diskless cannot answer them: [logStartOffset, localLogStartOffset)
-              // lives only in the remote tier once ConsolidatedDisklessLogPruner has pruned the
-              // diskless batches, and [0, classicToDisklessStartOffset) is the classic prefix the
-              // control plane never held. Both switch sentinels are negative, so a partition that
-              // never switched keeps the frontier at the isolation bound. Without a local log there
-              // is nothing to read locally and diskless is authoritative for the whole range.
-              val readableFrontier =
-                if (localLog.isEmpty) 0L
-                else Math.max(Math.max(localReadFrontier, localLogStartOffset), classicToDisklessStartOffset)
-              // A follower's local logStartOffset stays frozen at the switch. DeleteRecords and
-              // retention advance only the real leader's log start and the control-plane cross-tier
-              // earliest, never a follower's. With managed replicas the metadata transformer routes
-              // consumers to a hash-selected replica (usually a follower), which then serves the read
-              // from that stale local log, so the consumer could read records below the authoritative
-              // earliest. Reject those with OFFSET_OUT_OF_RANGE so the consumer resets via
-              // ListOffsets(EARLIEST). This covers every consumer fetch, not just pre-KIP-392 ones: a
-              // modern consumer is served from the follower too (allowReplica is true for it once the
-              // transformer points it at that replica). The leader is skipped since its own local
-              // logStartOffset already advanced. Best effort: the cache is only ever stale-low, so a
-              // few deleted records may survive until it refreshes.
-              val mayServeFromFollowerLocalLog =
-                params.isFromConsumer && !partition.isLeader
-              val crossTierEarliest =
-                if (mayServeFromFollowerLocalLog) crossTierEarliestOffset(tp.topicPartition())
-                else OptionalLong.empty()
-              if (crossTierEarliest.isPresent && fetchPartitionData.fetchOffset < crossTierEarliest.getAsLong) {
-                immediateFetchResponses += tp -> new FetchPartitionData(
-                  Errors.OFFSET_OUT_OF_RANGE,
-                  UnifiedLog.UNKNOWN_OFFSET,
-                  UnifiedLog.UNKNOWN_OFFSET,
-                  MemoryRecords.EMPTY,
-                  Optional.empty(),
-                  OptionalLong.empty(),
-                  Optional.empty(),
-                  OptionalInt.empty(),
-                  false
-                )
-                partitionLookupFailed = true
-              } else if (fetchPartitionData.fetchOffset < readableFrontier) {
-                shouldReadFromUnifiedLog = true
-                // Same population as isBelowSealAndAheadOfLocalLog: inside this branch only the seal
-                // can have raised the frontier. Keep the two in step. Marked here, not in the
-                // carve-out, since DelayedFetch re-reads on completion and would count twice.
-                // Followers ask for their own LEO on a leader below the seal, so they are excluded.
-                if (params.isFromConsumer && fetchPartitionData.fetchOffset >= logEndOffset)
-                  disklessSwitchedPrefixMissingFetchRate.mark()
-                // Only a consumer read that starts inside the local log and reaches its end can take
-                // a supplement. Outside that window the anchor asks object storage for classic
-                // offsets, or an empty read passes the exhaustion guard in
-                // buildConsolidationSupplementFetchInfos. A pending switch has no committed seal.
-                if (disklessEngine.isDefined &&
-                  params.isFromConsumer &&
-                  classicToDisklessStartOffset != PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING &&
-                  fetchPartitionData.fetchOffset >= localLogStartOffset &&
-                  fetchPartitionData.fetchOffset < logEndOffset &&
-                  localReadFrontier >= logEndOffset)
-                  consolidatingLocalFetchSupplements += (tp -> logEndOffset)
-              } else if (!shouldReadFromUnifiedLog && fetchPartitionData.fetchOffset < logEndOffset) {
-                // The local log holds this offset but cannot serve it, so this read goes to Inkless.
-                // A switch-pending partition is excluded because it was already routed to the local
-                // log above, and a follower cannot reach this branch: its frontier is LEO.
-                consolidationHighWatermarkLagFetchRate.mark()
-              }
-              // else: the fetch is at or beyond the frontier and beyond the local log, so diskless
-              // is authoritative
-            case Left(error) =>
-              warn(s"Error while fetching partition ${tp.topicPartition()} for consolidating diskless topic: $error. " +
-                s"Returning error for the fetch request since we cannot determine if the partition has switched to diskless or not.")
-              immediateFetchResponses +=
-                tp ->
-                  new FetchPartitionData(
-                    error,
-                    UnifiedLog.UNKNOWN_OFFSET,
-                    UnifiedLog.UNKNOWN_OFFSET,
-                    MemoryRecords.EMPTY,
-                    Optional.empty(),
-                    OptionalLong.empty(),
-                    Optional.empty(),
-                    OptionalInt.empty(),
-                    false
-                  )
-              partitionLookupFailed = true
-          }
-        } else {
-          shouldReadFromUnifiedLog = shouldReadFromUnifiedLog ||
-            (classicToDisklessStartOffset >= 0 && fetchPartitionData.fetchOffset < classicToDisklessStartOffset)
-        }
-
-        if (!partitionLookupFailed) {
-          val disklessSwitchCompleted = !shouldReadFromUnifiedLog && classicToDisklessStartOffset >= 0
-          if (params.isFromFollower && disklessSwitchCompleted) {
-            var fetchError = Errors.NONE
-            var divergingEpoch = Optional.empty[FetchResponseData.EpochEndOffset]
-            // A recovered follower for a switched partition may already be caught up to the
-            // seal offset but still be outside ISR. Record the seal-offset fetch so the normal
-            // ISR expansion path can observe that the follower is caught up without reading
-            // diskless data into the local log.
-            if (fetchPartitionData.fetchOffset >= classicToDisklessStartOffset) {
-              getPartitionOrError(tp.topicPartition) match {
-                case Right(partition) =>
-                  try {
-                    // Use the classic follower-read validation without returning any records.
-                    val fetchAtSeal = new PartitionData(
-                      fetchPartitionData.topicId,
-                      classicToDisklessStartOffset,
-                      fetchPartitionData.logStartOffset,
-                      0,
-                      fetchPartitionData.currentLeaderEpoch,
-                      fetchPartitionData.lastFetchedEpoch
-                    )
-                    val readInfo = partition.fetchRecords(
-                      fetchParams = params,
-                      fetchPartitionData = fetchAtSeal,
-                      fetchTimeMs = time.milliseconds,
-                      maxBytes = 0,
-                      minOneMessage = false,
-                      updateFetchState = true
-                    )
-                    divergingEpoch = readInfo.divergingEpoch
-                  } catch {
-                    case NonFatal(e) =>
-                      fetchError = Errors.forException(e)
-                      if (fetchError == Errors.UNKNOWN_SERVER_ERROR) {
-                        error(s"Error validating at-seal fetch from " +
-                          s"${FetchRequest.describeReplicaId(params.replicaId)} on partition $tp " +
-                          s"at seal $classicToDisklessStartOffset", e)
-                      }
-                  }
-                case Left(error) => fetchError = error
-              }
-            }
-            // The partition has fully switched to diskless and the follower is asking for an offset at or beyond it.
-            // Followers must never replicate diskless records into their local log.
-            // Empty records and HW at the seal offset make the follower treat the local log as caught up.
-            // ReplicaFetcherThread evicts once this replica is in ISR, or immediately if consolidating.
-            // logStartOffset=0 is a no-op for the follower (maybeIncrementLogStartOffset only ever advances),
-            // so classic local data stays in place and can still serve consumer reads.
-            immediateFetchResponses += tp ->
-              new FetchPartitionData(
-                fetchError,
-                if (fetchError == Errors.NONE) classicToDisklessStartOffset else UnifiedLog.UNKNOWN_OFFSET,
-                if (fetchError == Errors.NONE) 0L else UnifiedLog.UNKNOWN_OFFSET,
-                MemoryRecords.EMPTY,
-                divergingEpoch,
-                OptionalLong.empty(),
-                Optional.empty(),
-                OptionalInt.empty(),
-                false
-              )
-          } else {
-            (shouldReadFromUnifiedLog, config.disklessManagedReplicasEnabled) match {
-              // Either born-diskless or completely switched to diskless
-              case (false, _) =>
-                maybeBackfillDisklessTopicId(tp) match {
-                  case Some(backfilledTp) =>
-                    disklessFetchInfos += (backfilledTp -> fetchPartitionData)
-                    if (!backfilledTp.topicId.equals(tp.topicId)) disklessTopicIdOverrides += (backfilledTp -> tp)
-                  case None =>
-                    error(s"Got null topic id from KRaft metadata for diskless topic ${tp.topic}")
-                    immediateFetchResponses += tp -> new FetchPartitionData(
-                      Errors.UNKNOWN_TOPIC_ID,
-                      UnifiedLog.UNKNOWN_OFFSET,
-                      UnifiedLog.UNKNOWN_OFFSET,
-                      MemoryRecords.EMPTY,
-                      Optional.empty(),
-                      OptionalLong.empty(),
-                      Optional.empty(),
-                      OptionalInt.empty(),
-                      false
-                    )
-                }
-              // Local log has data, managed replicas enabled — serve from local log
-              case (true, true) =>
-                classicFetchInfos += fetchInfo
-              // Cannot read from UnifiedLog on a diskless topic if diskless managed replicas are not enabled.
-              case (true, false) =>
-                warn(s"Fetch from replica ${params.replicaId} for diskless topic " +
-                  s"${tp.topic} partition ${tp.partition} with fetch offset ${fetchPartitionData.fetchOffset} rejected: " +
-                  s"local log has data but managed replicas are not enabled.")
-                immediateFetchResponses += tp -> new FetchPartitionData(
-                  Errors.INVALID_REQUEST,
-                  UnifiedLog.UNKNOWN_OFFSET,
-                  UnifiedLog.UNKNOWN_OFFSET,
-                  MemoryRecords.EMPTY,
-                  Optional.empty(),
-                  OptionalLong.empty(),
-                  Optional.empty(),
-                  OptionalInt.empty(),
-                  false
-                )
-            }
-          }
-        }
-      }
-    }
-
-    def respond(response: Seq[(TopicIdPartition, FetchPartitionData)]): Unit = {
-      // Restore the client's original partition identity (see disklessTopicIdOverrides above)
-      // before handing the response back to the fetch session/request layer.
-      val restored =
-        if (disklessTopicIdOverrides.isEmpty) response
-        else response.map { case (backfilledTp, data) =>
-          disklessTopicIdOverrides.get(backfilledTp) match {
-            case Some(originalTp) => originalTp -> data
-            case None => backfilledTp -> data
-          }
-        }
-      responseCallback(restored ++ immediateFetchResponses)
-    }
+    def respond(response: Seq[(TopicIdPartition, FetchPartitionData)]): Unit =
+      responseCallback(plan.respond(response))
 
     if (classicFetchInfos.isEmpty && disklessFetchInfos.isEmpty) {
       respond(Seq.empty)
@@ -2705,18 +2277,6 @@ class ReplicaManager(val config: KafkaConfig,
           return
         }
       case Some(_) =>
-    }
-
-    // Older fetch versions (<13) don't have topicId in the request -- backfill it for backward compatibility
-    def maybeBackfillDisklessTopicId(topicIdPartition: TopicIdPartition): Option[TopicIdPartition] = {
-      if (topicIdPartition.topicId().equals(Uuid.ZERO_UUID)) {
-        _disklessTopicView.getTopicId(topicIdPartition.topic()) match {
-          case Uuid.ZERO_UUID => None
-          case topicId => Some(new TopicIdPartition(topicId, topicIdPartition.topicPartition()))
-        }
-      } else {
-        Some(topicIdPartition)
-      }
     }
 
     if (params.isFromFollower && disklessFetchInfos.nonEmpty && !config.disklessManagedReplicasEnabled) {
