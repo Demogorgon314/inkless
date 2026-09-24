@@ -24,10 +24,13 @@ restarts. The external-engine path does not initialize the native Inkless
 control plane, object storage, or maintenance workers.
 
 This remains an experimental integration, not a complete implementation of
-KIP-1163. Transactions, managed replicas, consolidation, classic-to-diskless
-migration, and DeleteRecords are not implemented for the external provider.
-The broker rejects the first four feature combinations or requests through its
-existing diskless checks and the external-engine configuration validation.
+KIP-1163. Transactions, consolidation, classic-to-diskless migration, and
+DeleteRecords are not implemented for the external provider. The broker rejects
+transactions through its existing diskless checks. It refuses to start when
+`diskless.allow.from.classic.enable` or `diskless.remote.storage.consolidation.enable`
+is set and the engine lacks the matching extension; see the extension table in
+the following section. Managed replicas need no engine extension, but they are
+not validated with Ursa.
 DeleteRecords fails because Ursa exposes no `RecordDeletion` extension; it does
 not truncate Ursa data. The existing share-fetch path is not validated here.
 
@@ -101,6 +104,13 @@ separate capability flag that can disagree with the implemented methods.
 | `RecordDeletion` | The diskless leg of DeleteRecords. |
 | `LogTiering` | Consolidation fetchers, the consolidated-log pruner, cross-tier ListOffsets(EARLIEST), and remote-start reporting. |
 | `LogTransition` | `InitDisklessLogManager` and diskless log repair after a classic-to-diskless switch. |
+
+`DisklessEngineFactory.validateFeatures` pairs these extensions with the broker
+configuration once, when the broker creates its engine. A broker fails to start
+if `diskless.allow.from.classic.enable` is set without `LogTransition`, or
+`diskless.remote.storage.consolidation.enable` without `LogTiering`. Kafka never
+checks the provider class name. Controller-only nodes create no engine, so a
+broker with the same configuration reports the mismatch.
 
 Kafka creates the DeleteRecords forwarder when an engine exposes `LogTiering` or
 `LogTransition`, because only those extensions create partitions with a local-log

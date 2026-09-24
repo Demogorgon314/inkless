@@ -39,6 +39,7 @@ core/src/test/java/kafka/server/diskless/**                        @aiven/inkles
 core/src/test/scala/unit/kafka/server/InklessEngineTestSupport.scala  @aiven/inkless
 core/src/test/scala/unit/kafka/server/DisklessFetchPlannerTest.scala  @aiven/inkless
 core/src/test/scala/unit/kafka/server/DisklessDeleteRecordsTest.scala  @aiven/inkless
+core/src/test/scala/unit/kafka/server/DisklessEngineFactoryTest.scala  @aiven/inkless
 core/src/test/scala/kafka/server/metadata/KafkaDisklessTopicViewTest.scala  @aiven/inkless
 core/src/main/java/kafka/server/metadata/DisklessTopicView.java   @aiven/inkless  # Kafka-owned diskless topic view used for routing
 core/src/main/scala/kafka/server/metadata/KafkaDisklessTopicView.scala  @aiven/inkless

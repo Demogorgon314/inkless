@@ -61,7 +61,6 @@ import io.aiven.inkless.engine.PartitionPlacement;
 import io.aiven.inkless.engine.RecordDeletion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -208,13 +207,6 @@ public class DisklessEnginesTest {
     public void rejectsUnknownProviderClass() {
         assertThrows(ConfigException.class, () -> DisklessEngines.load(
             Map.of(DisklessEngines.CLASS_NAME_CONFIG, "io.aiven.inkless.MissingProvider"), Time.SYSTEM));
-    }
-
-    @Test
-    public void defaultsToTheBuiltInProvider() {
-        assertFalse(DisklessEngines.isExternal(Map.of()));
-        assertFalse(DisklessEngines.isExternal(Map.of(DisklessEngines.CLASS_NAME_CONFIG, DisklessEngines.BUILT_IN_CLASS_NAME)));
-        assertTrue(DisklessEngines.isExternal(Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName())));
     }
 
     @Test

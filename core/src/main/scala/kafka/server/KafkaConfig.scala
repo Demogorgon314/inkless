@@ -549,10 +549,6 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
     if (originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       require(disklessStorageSystemEnabled, "diskless.engine.class.name requires diskless.storage.system.enable=true")
     }
-    if (disklessStorageSystemEnabled && DisklessEngines.isExternal(originals)) {
-      require(!disklessManagedReplicasEnabled,
-        "External diskless engines do not support managed replicas, switching, or consolidation")
-    }
     if (nodeId != brokerId) {
       throw new ConfigException(s"You must set `${KRaftConfigs.NODE_ID_CONFIG}` to the same value as `${ServerConfigs.BROKER_ID_CONFIG}`.")
     }

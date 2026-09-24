@@ -293,11 +293,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   private val consolidationFetcherManager: Option[ConsolidationFetcherManager] =
     if (config.disklessRemoteStorageConsolidationEnabled) {
-      // consolidationQuotaManager is unconditionally Some(...) under this same flag (unlike the
-      // storage services, which depend on the engine), so it needs no emptiness check here.
-      if (logTiering.isEmpty) {
-        throw new KafkaException("Remote storage consolidation requires an engine that supports log tiering")
-      }
+      // DisklessEngineFactory.validateFeatures guarantees log tiering whenever this flag is set.
       disklessEngine.zip(logTiering).zip(consolidationQuotaManager)
         .map { case ((engine, tiering), quotaMgr) =>
           new ConsolidationFetcherManager(
@@ -332,8 +328,8 @@ class ReplicaManager(val config: KafkaConfig,
   private val consolidationReconciler: Option[ConsolidationReconciler] =
     if (config.disklessRemoteStorageConsolidationEnabled) {
       if (!consolidationFetcherManager.isDefined || !consolidationMetrics.isDefined) {
-        throw new KafkaException("Remote storage consolidation is enabled, however Inkless doesn't seem to " +
-          "have configured consolidation fetch manager or metrics ready.")
+        throw new KafkaException("Remote storage consolidation is enabled, but no diskless engine with " +
+          "log tiering was supplied")
       }
       Some(new ConsolidationReconciler(this, stateChangeLogger, consolidationMetrics.get, _disklessTopicView, initialFetchOffset, consolidationFetcherManager.get, consolidationQuotaManager.get))
     } else {

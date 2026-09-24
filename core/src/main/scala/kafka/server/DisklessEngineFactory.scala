@@ -16,11 +16,13 @@
  */
 package kafka.server
 
-import io.aiven.inkless.engine.{DisklessEngine, DisklessEngineContext, DisklessStorageProvider, DisklessTopicLifecycle}
+import io.aiven.inkless.engine.{DisklessEngine, DisklessEngineContext, DisklessStorageProvider, DisklessTopicLifecycle, LogTiering, LogTransition}
 import kafka.server.diskless.DisklessEngines
 import kafka.server.metadata.KafkaDisklessMetadataSnapshot
+import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.metadata.KRaftMetadataCache
+import org.apache.kafka.server.config.ServerConfigs
 import org.apache.kafka.server.util.Scheduler
 import org.apache.kafka.storage.log.metrics.BrokerTopicStats
 
@@ -66,10 +68,38 @@ object DisklessEngineFactory {
              metadataCache: KRaftMetadataCache,
              metrics: BrokerTopicStats,
              provider: Option[DisklessStorageProvider]): Option[DisklessEngine] = {
-    provider.map(_.createBrokerEngine(new DisklessEngineContext(
-      config.brokerId, scheduler,
-      () => new KafkaDisklessMetadataSnapshot(metadataCache.currentImage()),
-      () => config.extractLogConfigMap,
-      new DisklessBrokerTopicMetrics(metrics))))
+    provider.map { p =>
+      val engine = p.createBrokerEngine(new DisklessEngineContext(
+        config.brokerId, scheduler,
+        () => new KafkaDisklessMetadataSnapshot(metadataCache.currentImage()),
+        () => config.extractLogConfigMap,
+        new DisklessBrokerTopicMetrics(metrics)))
+      try validateFeatures(config, engine)
+      catch {
+        case failure: Throwable =>
+          try engine.close()
+          catch { case closeFailure: Throwable => failure.addSuppressed(closeFailure) }
+          throw failure
+      }
+      engine
+    }
+  }
+
+  /**
+   * Rejects enabled diskless features whose engine extension is absent. The extensions are the only
+   * record of what an engine supports, so this is the single place that pairs them with the features.
+   * Controller-only nodes create no engine; a broker with the same configuration fails instead.
+   */
+  def validateFeatures(config: KafkaConfig, engine: DisklessEngine): Unit = {
+    val missing = Seq(
+      (config.disklessAllowFromClassicEnabled, engine.logTransition().isPresent,
+        ServerConfigs.DISKLESS_ALLOW_FROM_CLASSIC_ENABLE_CONFIG, classOf[LogTransition]),
+      (config.disklessRemoteStorageConsolidationEnabled, engine.logTiering().isPresent,
+        ServerConfigs.DISKLESS_REMOTE_STORAGE_CONSOLIDATION_ENABLE_CONFIG, classOf[LogTiering])
+    ).collect { case (true, false, feature, extension) =>
+      s"$feature=true requires an engine that returns ${extension.getSimpleName}"
+    }
+    if (missing.nonEmpty)
+      throw new ConfigException(s"The diskless engine does not support the enabled features: ${missing.mkString("; ")}")
   }
 }

@@ -44,11 +44,6 @@ public final class DisklessEngines {
     private DisklessEngines() {
     }
 
-    /** Checks whether the broker configuration selects a provider other than the built-in one. */
-    public static boolean isExternal(Map<String, ?> configs) {
-        return !BUILT_IN_CLASS_NAME.equals(className(configs));
-    }
-
     /**
      * Returns the configured process-scoped provider. An isolated provider holds a runtime lease until
      * it is closed, and each component it creates holds its own lease.
