@@ -18,11 +18,10 @@
 
 package io.aiven.inkless.consolidation
 
-import io.aiven.inkless.consume.ConcatenatedRecords
-import kafka.server.{FailedPartitions, KafkaConfig, ReplicaFetcherThread, ReplicaManager, ReplicaQuota}
+import kafka.server.{DisklessRecords, FailedPartitions, KafkaConfig, ReplicaFetcherThread, ReplicaManager, ReplicaQuota}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.RecordBatchTooLargeException
-import org.apache.kafka.common.record.internal.{MemoryRecords, Records}
+import org.apache.kafka.common.record.internal.{FileRecords, MemoryRecords, Records}
 import org.apache.kafka.common.requests.FetchResponse
 import org.apache.kafka.metadata.PartitionRegistration
 import org.apache.kafka.server.LeaderEndPoint
@@ -40,9 +39,9 @@ class ConsolidationFetcherThread(name: String,
                                  consolidationMetrics: Option[ConsolidationMetrics] = None) extends ReplicaFetcherThread(name, leader, brokerConfig, failedPartitions, replicaMgr, quota, logPrefix) {
 
   override def toMemoryRecords(records: Records): MemoryRecords = {
-    (records: @unchecked) match {
-      case r: ConcatenatedRecords => r.toMemoryRecords
-      case _ => super.toMemoryRecords(records)
+    records match {
+      case _: FileRecords => super.toMemoryRecords(records)
+      case _ => DisklessRecords.toMemoryRecords(records)
     }
   }
 
@@ -115,12 +114,6 @@ class ConsolidationFetcherThread(name: String,
     if (disklessLeaderEpoch == PartitionRegistration.NO_DISKLESS_LEADER_EPOCH) {
       return
     }
-    FetchResponse.recordsOrFail(partitionData) match {
-      case records: ConcatenatedRecords =>
-        records.batches().forEach(batch => batch.setPartitionLeaderEpoch(disklessLeaderEpoch))
-      case records: MemoryRecords =>
-        records.batches().forEach(batch => batch.setPartitionLeaderEpoch(disklessLeaderEpoch))
-      case _ =>
-    }
+    DisklessRecords.setPartitionLeaderEpoch(FetchResponse.recordsOrFail(partitionData), disklessLeaderEpoch)
   }
 }

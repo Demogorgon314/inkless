@@ -18,7 +18,7 @@ package kafka.server
 
 import io.aiven.inkless.engine.OffsetReader
 import io.aiven.inkless.engine.OffsetReader.{ListOffsetsResult, ListOffsetsSpec}
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition
 import org.apache.kafka.common.protocol.Errors
@@ -32,7 +32,7 @@ import java.util.concurrent.CompletableFuture
 
 class DisklessOffsetJobTest {
   private val engine = mock(classOf[OffsetReader])
-  private val metadata = mock(classOf[InklessMetadataView])
+  private val metadata = mock(classOf[KafkaDisklessTopicView])
   private val partition = new TopicPartition("topic", 0)
   private val id = new TopicIdPartition(Uuid.randomUuid(), partition)
   private val request = new ListOffsetsPartition().setPartitionIndex(0).setTimestamp(-1L)

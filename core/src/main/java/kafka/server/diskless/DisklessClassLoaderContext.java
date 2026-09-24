@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine.loader;
+package kafka.server.diskless;
 
 import org.apache.kafka.server.util.Scheduler;
 
@@ -128,16 +128,7 @@ final class DisklessClassLoaderContext {
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (method.getDeclaringClass() == Object.class) {
-                // The proxy, not the delegate, is the component every caller holds, so it keeps its
-                // own identity: forwarding equals/hashCode would make proxy.equals(proxy) false.
-                // toString still forwards, so logs and stack traces name the isolated delegate.
-                if ("equals".equals(method.getName()) && method.getParameterCount() == 1) {
-                    return proxy == args[0];
-                }
-                if ("hashCode".equals(method.getName()) && method.getParameterCount() == 0) {
-                    return System.identityHashCode(proxy);
-                }
-                return method.invoke(delegate, args);
+                return invokeObjectMethod(proxy, method, args);
             }
             if (lease != null && "close".equals(method.getName()) && method.getParameterCount() == 0) {
                 if (!closed.compareAndSet(false, true)) {
@@ -149,7 +140,23 @@ final class DisklessClassLoaderContext {
                     lease.close();
                 }
             }
-            Object result = call(classLoader, () -> DisklessClassLoaderContext.invoke(method, delegate, args));
+            return wrapResult(method, call(classLoader, () -> DisklessClassLoaderContext.invoke(method, delegate, args)));
+        }
+
+        private Object invokeObjectMethod(Object proxy, Method method, Object[] args) throws Throwable {
+            // The proxy, not the delegate, is the component every caller holds, so it keeps its
+            // own identity: forwarding equals/hashCode would make proxy.equals(proxy) false.
+            // toString still forwards, so logs and stack traces name the isolated delegate.
+            if ("equals".equals(method.getName()) && method.getParameterCount() == 1) {
+                return proxy == args[0];
+            }
+            if ("hashCode".equals(method.getName()) && method.getParameterCount() == 0) {
+                return System.identityHashCode(proxy);
+            }
+            return method.invoke(delegate, args);
+        }
+
+        private Object wrapResult(Method method, Object result) {
             if (result instanceof Optional<?> extension && extension.isPresent()) {
                 return Optional.of(borrowed(extension.get()));
             }

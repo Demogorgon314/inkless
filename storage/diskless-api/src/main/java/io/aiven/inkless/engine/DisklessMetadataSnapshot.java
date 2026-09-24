@@ -19,6 +19,7 @@ package io.aiven.inkless.engine;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.Uuid;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -28,10 +29,18 @@ import java.util.Optional;
  * A snapshot must not consult a newer image during a lookup. Callers obtain a fresh snapshot for
  * each provisioning operation or maintenance pass, and must not cache snapshots across requests.
  */
-@FunctionalInterface
 public interface DisklessMetadataSnapshot {
     /** Returns only diskless topics present in this image, resolved by immutable topic ID. */
     Optional<TopicMetadata> topic(Uuid topicId);
+
+    /** Returns the diskless topic that currently holds this name in the image. */
+    Optional<TopicMetadata> topic(String name);
+
+    /** Returns every diskless topic in the image. */
+    Collection<TopicMetadata> topics();
+
+    /** Returns the number of brokers registered in the image, including fenced brokers. */
+    int brokerCount();
 
     /** Rejects stale names and partition numbers without looking up another topic incarnation. */
     default Optional<TopicMetadata> partition(TopicIdPartition partition) {

@@ -25,7 +25,6 @@ import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.metrics.KafkaMetricsGroup;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +56,7 @@ import io.aiven.inkless.common.InklessThreadFactory;
 import io.aiven.inkless.common.ObjectKeyCreator;
 import io.aiven.inkless.common.metrics.ThreadPoolMonitor;
 import io.aiven.inkless.control_plane.ControlPlane;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.generated.FileExtent;
 import io.aiven.inkless.storage_backend.common.ObjectFetcher;
 import io.github.bucket4j.Bandwidth;
@@ -119,7 +119,7 @@ public class Reader implements AutoCloseable {
     private final ConcurrentHashMap<CompletableFuture<?>, AtomicBoolean> hedgeGuards = new ConcurrentHashMap<>();
     private final boolean isConsolidationFetch;
     private final InklessFetchMetrics fetchMetrics;
-    private final BrokerTopicStats brokerTopicStats;
+    private final DisklessTopicMetrics topicMetrics;
     private final Bucket rateLimiter;
     private ThreadPoolMonitor metadataThreadPoolMonitor;
     private ThreadPoolMonitor dataThreadPoolMonitor;
@@ -132,7 +132,7 @@ public class Reader implements AutoCloseable {
         ObjectCache cache,
         ControlPlane controlPlane,
         ObjectFetcher objectFetcher,
-        BrokerTopicStats brokerTopicStats,
+        DisklessTopicMetrics topicMetrics,
         int fetchMetadataThreadPoolSize,
         int fetchDataThreadPoolSize,
         Optional<ObjectFetcher> maybeLaggingFetchStorage,
@@ -143,7 +143,7 @@ public class Reader implements AutoCloseable {
         long hedgeTotalTimeThresholdMs,
         int maxBatchesPerPartitionToFind
     ) {
-        this(time, objectKeyCreator, keyAlignmentStrategy, cache, controlPlane, objectFetcher, brokerTopicStats,
+        this(time, objectKeyCreator, keyAlignmentStrategy, cache, controlPlane, objectFetcher, topicMetrics,
             fetchMetadataThreadPoolSize, fetchDataThreadPoolSize, maybeLaggingFetchStorage,
             laggingConsumerThresholdMs, laggingConsumerRequestRateLimit, laggingConsumerThreadPoolSize,
             hedgeTtfbThresholdMs, hedgeTotalTimeThresholdMs,
@@ -159,7 +159,7 @@ public class Reader implements AutoCloseable {
         ObjectCache cache,
         ControlPlane controlPlane,
         ObjectFetcher objectFetcher,
-        BrokerTopicStats brokerTopicStats,
+        DisklessTopicMetrics topicMetrics,
         int fetchMetadataThreadPoolSize,
         int fetchDataThreadPoolSize,
         Optional<ObjectFetcher> maybeLaggingFetchStorage,
@@ -179,7 +179,7 @@ public class Reader implements AutoCloseable {
             cache,
             controlPlane,
             objectFetcher,
-            brokerTopicStats,
+            topicMetrics,
             fetchMetadataThreadPoolSize,
             fetchDataThreadPoolSize,
             maybeLaggingFetchStorage,
@@ -202,7 +202,7 @@ public class Reader implements AutoCloseable {
         ObjectCache cache,
         ControlPlane controlPlane,
         ObjectFetcher objectFetcher,
-        BrokerTopicStats brokerTopicStats,
+        DisklessTopicMetrics topicMetrics,
         int fetchMetadataThreadPoolSize,
         int fetchDataThreadPoolSize,
         Optional<ObjectFetcher> maybeLaggingFetchStorage,
@@ -254,7 +254,7 @@ public class Reader implements AutoCloseable {
             hedgeTtfbThresholdMs,
             hedgeTotalTimeThresholdMs,
             new InklessFetchMetrics(time, cache, metricsGroup),
-            brokerTopicStats,
+            topicMetrics,
             threadNamePrefix,
             isConsolidationFetch
         );
@@ -310,14 +310,14 @@ public class Reader implements AutoCloseable {
         long hedgeTtfbThresholdMs,
         long hedgeTotalTimeThresholdMs,
         InklessFetchMetrics fetchMetrics,
-        BrokerTopicStats brokerTopicStats,
+        DisklessTopicMetrics topicMetrics,
         String monitorPrefix
     ) {
         this(time, objectKeyCreator, keyAlignmentStrategy, cache, controlPlane, objectFetcher,
             maxBatchesPerPartitionToFind, metadataExecutor, fetchDataExecutor,
             laggingConsumerObjectFetcher, laggingConsumerThresholdMs, laggingConsumerRequestRateLimit,
             laggingFetchDataExecutor, hedgeScheduler, hedgeTtfbThresholdMs, hedgeTotalTimeThresholdMs,
-            fetchMetrics, brokerTopicStats, monitorPrefix, false);
+            fetchMetrics, topicMetrics, monitorPrefix, false);
     }
 
     // visible for testing
@@ -339,7 +339,7 @@ public class Reader implements AutoCloseable {
         long hedgeTtfbThresholdMs,
         long hedgeTotalTimeThresholdMs,
         InklessFetchMetrics fetchMetrics,
-        BrokerTopicStats brokerTopicStats,
+        DisklessTopicMetrics topicMetrics,
         String monitorPrefix,
         boolean isConsolidationFetch
     ) {
@@ -411,7 +411,7 @@ public class Reader implements AutoCloseable {
 
         this.isConsolidationFetch = isConsolidationFetch;
         this.fetchMetrics = fetchMetrics;
-        this.brokerTopicStats = brokerTopicStats;
+        this.topicMetrics = topicMetrics;
         try {
             // Initialize all monitors first, then assign to fields to ensure all-or-nothing semantics.
             // If any monitor creation fails, none are assigned, preventing inconsistent monitoring state.
@@ -527,8 +527,7 @@ public class Reader implements AutoCloseable {
                     LOGGER.warn("Fetch failed", throwable);
                     for (final var entry : fetchInfos.entrySet()) {
                         final String topic = entry.getKey().topic();
-                        brokerTopicStats.allTopicsStats().failedFetchRequestRate().mark();
-                        brokerTopicStats.topicStats(topic).failedFetchRequestRate().mark();
+                        topicMetrics.markFailedFetchRequest(topic);
                     }
                     // Record specific failure metrics based on exception type
                     // All exceptions are wrapped in CompletionException due to CompletableFuture
@@ -545,11 +544,9 @@ public class Reader implements AutoCloseable {
                     for (final var entry : topicIdPartitionFetchPartitionDataMap.entrySet()) {
                         final String topic = entry.getKey().topic();
                         if (entry.getValue().error == Errors.NONE) {
-                            brokerTopicStats.allTopicsStats().totalFetchRequestRate().mark();
-                            brokerTopicStats.topicStats(topic).totalFetchRequestRate().mark();
+                            topicMetrics.markFetchRequest(topic);
                         } else {
-                            brokerTopicStats.allTopicsStats().failedFetchRequestRate().mark();
-                            brokerTopicStats.topicStats(topic).failedFetchRequestRate().mark();
+                            topicMetrics.markFailedFetchRequest(topic);
                         }
                     }
                     fetchMetrics.fetchCompleted(startAt);

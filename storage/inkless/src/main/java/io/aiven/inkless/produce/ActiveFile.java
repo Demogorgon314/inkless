@@ -34,7 +34,6 @@ import org.apache.kafka.storage.internals.log.LogAppendInfo;
 import org.apache.kafka.storage.internals.log.LogConfig;
 import org.apache.kafka.storage.internals.log.LogValidator;
 import org.apache.kafka.storage.internals.log.RecordValidationException;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,8 +45,8 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 import io.aiven.inkless.TimeUtils;
-
-import static org.apache.kafka.storage.internals.log.UnifiedLog.newValidatorMetricsRecorder;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
+import io.aiven.inkless.engine.DisklessTopicMetrics.InvalidRecords;
 
 /**
  * An active file.
@@ -68,15 +67,15 @@ class ActiveFile {
     private final Map<Integer, CompletableFuture<Map<TopicIdPartition, PartitionResponse>>> awaitingFuturesByRequest = new HashMap<>();
     private final Map<Integer, Map<TopicIdPartition, PartitionResponse>> invalidBatchesByRequest = new HashMap<>();
 
-    private final BrokerTopicStats brokerTopicStats;
+    private final DisklessTopicMetrics metrics;
     private final LogValidator.MetricsRecorder validatorMetricsRecorder;
 
     ActiveFile(final Time time,
-               final BrokerTopicStats brokerTopicStats) {
+               final DisklessTopicMetrics metrics) {
         this.buffer = new BatchBuffer();
         this.time = time;
-        this.brokerTopicStats = brokerTopicStats;
-        this.validatorMetricsRecorder = newValidatorMetricsRecorder(brokerTopicStats.allTopicsStats());
+        this.metrics = metrics;
+        this.validatorMetricsRecorder = validatorMetricsRecorder(metrics);
     }
 
     // For testing
@@ -84,8 +83,37 @@ class ActiveFile {
         this.buffer = new BatchBuffer();
         this.time = time;
         this.start = start;
-        this.brokerTopicStats = new BrokerTopicStats();
-        this.validatorMetricsRecorder = newValidatorMetricsRecorder(brokerTopicStats.allTopicsStats());
+        this.metrics = DisklessTopicMetrics.noop();
+        this.validatorMetricsRecorder = validatorMetricsRecorder(metrics);
+    }
+
+    private static LogValidator.MetricsRecorder validatorMetricsRecorder(final DisklessTopicMetrics metrics) {
+        return new LogValidator.MetricsRecorder() {
+            @Override
+            public void recordInvalidMagic() {
+                metrics.markInvalidRecords(InvalidRecords.MAGIC);
+            }
+
+            @Override
+            public void recordInvalidOffset() {
+                metrics.markInvalidRecords(InvalidRecords.OFFSET_OR_SEQUENCE);
+            }
+
+            @Override
+            public void recordInvalidSequence() {
+                metrics.markInvalidRecords(InvalidRecords.OFFSET_OR_SEQUENCE);
+            }
+
+            @Override
+            public void recordInvalidChecksums() {
+                metrics.markInvalidRecords(InvalidRecords.CHECKSUM);
+            }
+
+            @Override
+            public void recordNoKeyCompactedTopic() {
+                metrics.markInvalidRecords(InvalidRecords.NO_KEY_COMPACTED_TOPIC);
+            }
+        };
     }
 
     // Eventually this could be refactored to be included within ReplicaManager as it shares a lot of similarities
@@ -116,8 +144,7 @@ class ActiveFile {
 
             // Similar to ReplicaManager#appendToLocalLog
             try {
-                brokerTopicStats.topicStats(topicIdPartition.topic()).totalProduceRequestRate().mark();
-                brokerTopicStats.allTopicsStats().totalProduceRequestRate().mark();
+                metrics.markProduceRequest(topicIdPartition.topic());
 
                 final MemoryRecords records = entry.getValue();
 
@@ -130,15 +157,12 @@ class ActiveFile {
                     buffer,
                     invalidBatches,
                     requestLocal,
-                    brokerTopicStats,
+                    metrics,
                     validatorMetricsRecorder
                 );
 
                 // update stats for successfully appended bytes and messages as bytesInRate and messageInRate
-                brokerTopicStats.topicStats(topicIdPartition.topic()).bytesInRate(true).mark(records.sizeInBytes());
-                brokerTopicStats.allTopicsStats().bytesInRate(true).mark(records.sizeInBytes());
-                brokerTopicStats.topicStats(topicIdPartition.topic()).messagesInRate().mark(appendInfo.numMessages());
-                brokerTopicStats.allTopicsStats().messagesInRate().mark(appendInfo.numMessages());
+                metrics.markBytesIn(topicIdPartition.topic(), records.sizeInBytes(), appendInfo.numMessages());
             // case e@ (_: UnknownTopicOrPartitionException |  // Handled earlier
             //          _: NotLeaderOrFollowerException | // Not relevant for diskless
             //          _: RecordTooLargeException |
@@ -173,8 +197,7 @@ class ActiveFile {
     }
 
     private void processFailedRecords(TopicPartition topicPartition, Throwable t) {
-        brokerTopicStats.topicStats(topicPartition.topic()).failedProduceRequestRate().mark();
-        brokerTopicStats.allTopicsStats().failedProduceRequestRate().mark();
+        metrics.markFailedProduceRequest(topicPartition.topic());
         if (t instanceof InvalidProducerEpochException) {
             LOGGER.info("Error processing append operation on partition {}", topicPartition, t);
         }

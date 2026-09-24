@@ -35,7 +35,8 @@ not truncate Ursa data. The existing share-fetch path is not validated here.
 
 ```text
 storage/diskless-api    SPI only: provider, engine, extensions, lifecycle, value types
-storage/inkless         loader (isolated runtimes) and the built-in Inkless provider
+core                    loader (kafka.server.diskless), routing, and Kafka-owned adapters
+storage/inkless         built-in Inkless provider; core loads it at runtime only
 storage/ursa            Ursa provider, compiled against storage/diskless-api alone
 
 KafkaApis / ReplicaManager
@@ -64,12 +65,12 @@ enforcer, file cleaner, topic purger, and shared state. Its private helpers
 implement background reading, retention coordination, and log initialization.
 They are never returned to callers.
 
-`DisklessEngineFactory` selects one `DisklessStorageProvider` and creates every
-component through it. The built-in `InklessStorageProvider` receives the Inkless
-control plane and broker services through its constructor. An isolated provider
-receives only the SPI context. Both paths call `createBrokerEngine` and
-`createTopicLifecycle`, so broker code has no provider-specific branch after
-selection. `ReplicaManager` owns engine shutdown; the broker closes the engine if
+`DisklessEngineFactory` loads one `DisklessStorageProvider` and creates every
+component through it. The built-in `InklessStorageProvider` and an isolated
+provider go through the same path: Kafka instantiates the class by name, calls
+`configure`, and then `createBrokerEngine` and `createTopicLifecycle` with the
+same SPI contexts. Broker code has no provider-specific branch, and `core`
+depends on `storage:inkless` only at runtime. `ReplicaManager` owns engine shutdown; the broker closes the engine if
 construction fails before ownership transfers. The broker stops its scheduler and
 drains fetchers before closing the engine. The engine cancels its scheduled tasks
 and closes handlers before shared state.
@@ -122,33 +123,37 @@ use it for topic routing, leader epochs, seals, and cross-tier offset decisions.
 These broker responsibilities apply regardless of the selected storage engine,
 and none of them depends on an Inkless type.
 
-`InklessMetadataView` extends the Kafka view with Inkless's own `MetadataView`
-contract and its cached per-topic `LogConfig`. Only the built-in provider
-receives it. The built-in engine keeps that cache current from
-`onTopicConfigChanged`, `onTopicDeleted`, and `onBrokerLogDefaultsChanged`; Kafka's
-topic configuration handler, metadata publisher, and dynamic broker
-configuration no longer reach into it. Kafka calls `onBrokerLogDefaultsChanged`
+The built-in provider builds its own `MetadataView` from the SPI context:
+`SnapshotMetadataView` in `storage/inkless` reads the metadata snapshots and the
+broker log defaults, and caches per-topic `LogConfig` objects. The built-in
+engine keeps that cache current from `onTopicConfigChanged`, `onTopicDeleted`,
+and `onBrokerLogDefaultsChanged`; Kafka's topic configuration handler, metadata
+publisher, and dynamic broker configuration no longer reach into it. Kafka calls `onBrokerLogDefaultsChanged`
 after a dynamic change to broker log defaults, which also lets an external engine
 refresh defaults it applied to open partitions.
 
 `SharedServer` holds one `DisklessStorageProvider` for the process and shares it
-between the broker and controller roles. `DisklessEngineFactory` selects it: an
-isolated provider when `diskless.engine.class.name` is set, and
-`InklessStorageProvider` otherwise. The built-in provider creates and owns the
-Inkless control plane; the broker attaches its Inkless-specific services with
-`withBrokerServices`, which returns a view that borrows the control plane.
-`SharedServer` closes the provider after both roles have closed their
-components. Kafka therefore no longer creates or closes any Inkless resource
-itself.
+between the broker and controller roles. `diskless.engine.class.name` selects the
+provider and defaults to `io.aiven.inkless.engine.builtin.InklessStorageProvider`.
+Without `diskless.engine.class.path`, the provider shares the broker class loader
+and Kafka calls it directly; with a class path, it runs in an isolated runtime
+behind SPI proxies. The built-in provider creates and owns the Inkless control
+plane in `configure`. `SharedServer` closes the provider after both roles have
+closed their components. Kafka therefore no longer creates or closes any Inkless
+resource itself.
 
-`DisklessEngineContext` supplies provider settings, broker identity, time, the
-broker scheduler, current broker log defaults, and a supplier of immutable
-metadata snapshots. The broker log defaults supplier reflects dynamic broker
-configuration updates. `DisklessLifecycleContext` supplies provider settings to
-the controller lifecycle. Both are records, so Kafka can add services without
-changing the provider method signatures. Each snapshot resolves diskless topics
-by UUID and reads partition count, raw topic overrides, and source revision from
-one Kafka metadata image. Each snapshot caches resolved topics by UUID. Broker
+`DisklessProviderContext` supplies the broker's original configuration and time
+once, to `configure`. Each provider reads its own namespace: the built-in provider
+reads `inkless.*` and the Kafka consolidation settings, and Ursa reads
+`diskless.engine.config.*`. `DisklessEngineContext` supplies broker identity, the
+broker scheduler, current broker log defaults, a supplier of immutable metadata
+snapshots, and `DisklessTopicMetrics`. The broker log defaults supplier reflects
+dynamic broker configuration updates. `DisklessTopicMetrics` reports produce,
+fetch, and validation outcomes to the broker topic metrics that classic topics
+use, so an engine never touches `BrokerTopicStats`. Both contexts are records, so
+Kafka can add services without changing the provider method signatures. Each
+snapshot resolves diskless topics by UUID or name, lists them, and reads partition
+count, raw topic overrides, and source revision from one Kafka metadata image. Each snapshot caches resolved topics by UUID. Broker
 defaults remain separate. Configuration-change callbacks receive the same
 `TopicMetadata` representation, including raw overrides and source revision,
 from the image being published; they do not read the broker's name-based config
@@ -282,8 +287,9 @@ Create the bucket before using it. Create Kafka topics with
 Unconfigured topics keep their classic behavior. Omitting the engine properties
 selects the native Inkless implementation.
 
-The loader strips `diskless.engine.config.` before calling the provider.
-`diskless.engine.class.name` names a `DisklessStorageProvider`, not a
+Kafka passes the whole broker configuration to `configure`; the Ursa provider
+strips `diskless.engine.config.` itself. `diskless.engine.class.name` names a
+`DisklessStorageProvider`, not a
 `DisklessEngine`. This changes the experimental PoC contract; existing PoC
 configurations must select `UrsaStorageProvider` and rebuild their plugin.
 The properties are experimental and are read from the original broker
@@ -351,7 +357,7 @@ The source baseline is UFK commit `706699788b`; the Inkless baseline is
   partition opening and writer initialization share the same topic configuration.
 - The generic lifecycle contract, reconciler, and reconciler tests come from
   UFK. Their imports and topic-enable key are adapted to Inkless.
-- The loader utilities come from UFK, with stricter private dependency isolation,
+- The loader utilities in `core/src/main/java/kafka/server/diskless/` come from UFK, with stricter private dependency isolation,
   JVM platform delegation, returned-service context handling, and asynchronous
   runtime-shutdown handling.
 - UFK's native storage API types remain private to the plugin. The broker SPI

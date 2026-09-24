@@ -23,7 +23,7 @@ import io.aiven.inkless.control_plane.PruneDisklessLogsRequest
 import io.aiven.inkless.engine.builtin.InklessDisklessEngineTest.nativeEngine
 import kafka.cluster.Partition
 import kafka.server.ReplicaManager
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.metadata.PartitionRegistration
@@ -62,7 +62,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunBuildsPruneRequestWhenTopicIdLogAndRemoteOffsetPresent(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -88,7 +88,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunBuildsPruneRequestForBornConsolidatedPartitionWithoutSafeFloor(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -114,7 +114,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunOmitsSwitchedPartitionWhenSafeFloorNotReached(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -131,7 +131,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunOmitsPruneWhenHighestOffsetInRemoteStorageNegative(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -146,7 +146,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunOmitsPruneWhenClassicToDisklessSwitchIsPending(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -162,7 +162,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunOmitsPruneWhenTopicIdMissing(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -178,7 +178,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunDoesNotSetDisklessStartWhenPruneReportsUnknownTopic(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -198,7 +198,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunUpdatesDisklessStartWhenTopicNameResolved(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))
@@ -218,7 +218,7 @@ class ConsolidatedDisklessLogPrunerTest {
   @Test
   def testRunDoesNotUpdatePartitionWhenGetPartitionFailsAfterPrune(): Unit = {
     val rm = mock(classOf[ReplicaManager])
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     val cp = mock(classOf[ControlPlane])
 
     when(view.getConsolidatingDisklessTopicPartitions).thenReturn(util.Set.of(tip))

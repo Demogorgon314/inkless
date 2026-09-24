@@ -1190,7 +1190,9 @@ project(':core') {
     implementation project(':tools:tools-api')
     implementation project(':raft')
     implementation project(':storage')
-    implementation project(':storage:inkless')
+    implementation project(':storage:diskless-api')
+    // The built-in diskless provider loads by class name through the engine SPI.
+    runtimeOnly project(':storage:inkless')
     implementation project(':server')
     implementation project(':coordinator-common')
     implementation project(':share-coordinator')
@@ -1254,6 +1256,7 @@ project(':core') {
     testImplementation libs.tieredStorageForKafkaCore
     testImplementation libs.tieredStorageForKafkaS3
     testImplementation libs.awsSdkS3
+    testImplementation project(':storage:inkless')
     testImplementation project(':storage:inkless').sourceSets.test.output
 
     testRuntimeOnly runtimeTestLibs

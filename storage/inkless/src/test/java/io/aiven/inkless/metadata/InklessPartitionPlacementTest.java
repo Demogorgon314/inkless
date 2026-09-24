@@ -47,7 +47,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
-import io.aiven.inkless.control_plane.MetadataView;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -67,7 +66,7 @@ class InklessPartitionPlacementTest {
     static final Map<String, String> NO_AZ_LISTENER_MAP = Map.of();
 
     @Mock
-    MetadataView metadataView;
+    PlacementResponseWriter.Metadata metadataView;
 
     PlacementResponseWriter rewriter(final Map<String, String> clientAzListenerMap) {
         return new PlacementResponseWriter(metadataView, new InklessPartitionPlacement(clientAzListenerMap));

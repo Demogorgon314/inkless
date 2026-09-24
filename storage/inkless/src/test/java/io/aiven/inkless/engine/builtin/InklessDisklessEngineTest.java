@@ -36,7 +36,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.function.Consumer;
 
 import io.aiven.inkless.common.SharedState;
-import io.aiven.inkless.config.InklessConfig;
 import io.aiven.inkless.consume.FetchHandler;
 import io.aiven.inkless.consume.FetchOffsetHandler;
 import io.aiven.inkless.control_plane.ControlPlane;
@@ -50,10 +49,9 @@ import io.aiven.inkless.delete.TopicPurger;
 import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessMetadataSnapshot.TopicMetadata;
 import io.aiven.inkless.engine.DisklessEngineContractAssertions;
-import io.aiven.inkless.engine.DisklessLifecycleContext;
+import io.aiven.inkless.engine.DisklessProviderContext;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
 import io.aiven.inkless.engine.RecordDeletion.DeleteRecordsResult;
-import io.aiven.inkless.engine.loader.DisklessEnginesTest;
 import io.aiven.inkless.produce.AppendHandler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -242,14 +240,16 @@ public class InklessDisklessEngineTest {
     }
 
     @Test
-    public void providerWithoutBrokerServicesCreatesOnlyTheLifecycleAndBorrowsTheControlPlane() throws Exception {
+    public void providerRequiresConfigurationAndLeavesABorrowedControlPlaneOpen() throws Exception {
         var controlPlane = mock(ControlPlane.class);
-        var provider = InklessStorageProvider.borrowing(mock(InklessConfig.class), controlPlane);
-        try (var lifecycle = provider.createTopicLifecycle(new DisklessLifecycleContext(Map.of()))) {
+        var provider = InklessStorageProvider.borrowing(controlPlane);
+        assertThrows(IllegalStateException.class, provider::createTopicLifecycle);
+        var context = new DisklessProviderContext(Map.of(), Time.SYSTEM);
+        provider.configure(context);
+        assertThrows(IllegalStateException.class, () -> provider.configure(context));
+        try (var lifecycle = provider.createTopicLifecycle()) {
             assertInstanceOf(DisklessTopicLifecycle.RequestDriven.class, lifecycle);
         }
-        assertThrows(IllegalStateException.class, () -> provider.createBrokerEngine(
-            DisklessEnginesTest.testContext(Map.of(), mock(Scheduler.class))));
         provider.close();
         verify(controlPlane, never()).close();
     }

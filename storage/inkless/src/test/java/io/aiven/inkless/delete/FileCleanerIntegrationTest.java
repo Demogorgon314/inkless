@@ -32,7 +32,6 @@ import org.apache.kafka.server.storage.log.FetchIsolation;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -81,6 +80,7 @@ import io.aiven.inkless.control_plane.FindBatchRequest;
 import io.aiven.inkless.control_plane.FindBatchResponse;
 import io.aiven.inkless.control_plane.InMemoryControlPlane;
 import io.aiven.inkless.control_plane.MetadataView;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.produce.AppendHandler;
 import io.aiven.inkless.produce.WriterTestUtils;
 import io.aiven.inkless.storage_backend.s3.S3Storage;
@@ -176,7 +176,7 @@ class FileCleanerIntegrationTest {
         final InklessConfig inklessConfig = new InklessConfig(config);
 
         sharedState = SharedState.initialize(time, BROKER_ID, inklessConfig,
-            metadataView, controlPlane, new BrokerTopicStats(), defaultTopicConfigs);
+            metadataView, controlPlane, DisklessTopicMetrics.noop(), defaultTopicConfigs);
     }
 
     @AfterEach

@@ -50,10 +50,10 @@ import java.util.concurrent.TimeUnit;
 
 import io.aiven.inkless.engine.DisklessEngineContext;
 import io.aiven.inkless.engine.DisklessEngineContractAssertions;
-import io.aiven.inkless.engine.DisklessLifecycleContext;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.engine.builtin.InklessStorageProvider;
-import io.aiven.inkless.engine.loader.DisklessEngines;
+import kafka.server.diskless.DisklessEngines;
 import io.aiven.inkless.test_utils.MinioContainer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -65,6 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class UrsaEngineIntegrationTest {
     private static final String DISKLESS = "ursa-records";
     private static final String CLASSIC = "classic-records";
+    private static final String URSA_CONFIG_PREFIX = "diskless.engine.config.";
 
     @Test
     public void persistsRecordsAcrossBrokerRestartsWithoutNativeControlPlane() throws Exception {
@@ -83,17 +84,17 @@ public class UrsaEngineIntegrationTest {
                     .setConfigProp(DisklessEngines.CLASS_NAME_CONFIG,
                         "org.apache.kafka.storage.diskless.UrsaStorageProvider")
                     .setConfigProp(DisklessEngines.CLASS_PATH_CONFIG, System.getProperty("ursa.engine.class.path"))
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.catalog.oxia.service.url", oxiaUrl)
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.oxia.service.url", oxiaUrl)
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.backend.type", "S3")
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.s3.endpoint", minio.getEndpoint())
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.s3.access.key", minio.getAccessKey())
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.s3.secret.key", minio.getSecretKey())
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.s3.bucket", minio.getBucketName())
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.s3.path.style.access", "true")
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.path", "engine-test")
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.write.buffer.flush.interval.ms", "10")
-                    .setConfigProp(DisklessEngines.CONFIG_PREFIX + "ursa.storage.producer.state.snapshot.record.threshold", "1")
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.catalog.oxia.service.url", oxiaUrl)
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.oxia.service.url", oxiaUrl)
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.backend.type", "S3")
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.s3.endpoint", minio.getEndpoint())
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.s3.access.key", minio.getAccessKey())
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.s3.secret.key", minio.getSecretKey())
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.s3.bucket", minio.getBucketName())
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.s3.path.style.access", "true")
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.path", "engine-test")
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.write.buffer.flush.interval.ms", "10")
+                    .setConfigProp(URSA_CONFIG_PREFIX + "ursa.storage.producer.state.snapshot.record.threshold", "1")
                     .setConfigProp("offsets.topic.replication.factor", "1")
                     .build()) {
                 cluster.format();
@@ -155,19 +156,17 @@ public class UrsaEngineIntegrationTest {
                     var oldId = admin.describeTopics(List.of(DISKLESS)).allTopicNames()
                         .get(30, TimeUnit.SECONDS).get(DISKLESS).topicId();
                     var originals = cluster.controllers().values().iterator().next().config().originals();
-                    try (var provider = DisklessEngines.load(originals)) {
-                        var providerConfig = DisklessEngines.providerConfigs(originals);
+                    try (var provider = DisklessEngines.load(originals, Time.SYSTEM)) {
                         var broker = cluster.brokers().values().iterator().next();
-                        var context = new DisklessEngineContext(providerConfig, broker.config().brokerId(), Time.SYSTEM,
-                            broker.kafkaScheduler(),
+                        var context = new DisklessEngineContext(broker.config().brokerId(), broker.kafkaScheduler(),
                             () -> new KafkaDisklessMetadataSnapshot(broker.metadataCache().currentImage()),
-                            () -> broker.config().extractLogConfigMap());
+                            () -> broker.config().extractLogConfigMap(), DisklessTopicMetrics.noop());
                         try (var engine = provider.createBrokerEngine(context)) {
                             DisklessEngineContractAssertions.assertOffsetBatch(engine,
                                 new TopicIdPartition(oldId, partition),
                                 new TopicIdPartition(Uuid.randomUuid(), partition), 21L);
                         }
-                        try (var inspection = provider.createTopicLifecycle(new DisklessLifecycleContext(providerConfig))) {
+                        try (var inspection = provider.createTopicLifecycle()) {
                             var lifecycle = (DisklessTopicLifecycle.MetadataDriven) inspection;
                             TestUtils.waitForCondition(() -> lifecycle.listManagedTopics().get(10, TimeUnit.SECONDS)
                                 .stream().anyMatch(topic -> topic.topicId().equals(oldId)),

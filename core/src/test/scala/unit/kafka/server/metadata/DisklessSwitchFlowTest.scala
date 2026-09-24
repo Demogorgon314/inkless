@@ -963,7 +963,7 @@ class DisklessSwitchFlowTest {
       metadataCache = metadataCache,
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
       alterPartitionManager = mock(classOf[kafka.server.AlterPartitionManager]),
-      disklessTopicView = Some(mock(classOf[InklessMetadataView])),
+      disklessTopicView = Some(mock(classOf[KafkaDisklessTopicView])),
       initDisklessLogManager = Some(initDisklessLogManager)
     )
     val faultHandler = mock(classOf[FaultHandler])

@@ -282,7 +282,7 @@ class DisklessLeaderEndPoint(
           return records
       }
     }
-    // Nothing trimmed: keep the original to preserve the ConcatenatedRecords zero-copy path.
+    // Nothing trimmed: keep the original to preserve the engine's zero-copy records.
     if (!skippedPrefix && !stoppedEarly) return records
     if (selected.isEmpty) return records
     val buffer = ByteBuffer.allocate(accumulated)

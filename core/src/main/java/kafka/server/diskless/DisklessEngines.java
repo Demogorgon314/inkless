@@ -14,83 +14,103 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine.loader;
+package kafka.server.diskless;
 
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.utils.ChildFirstClassLoader;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 
 import java.net.URL;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
-import io.aiven.inkless.engine.DisklessLifecycleContext;
+import io.aiven.inkless.engine.DisklessProviderContext;
 import io.aiven.inkless.engine.DisklessStorageProvider;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
 
-/** Loads storage providers with shared Kafka APIs and an isolated provider dependency runtime. */
+/**
+ * Loads the configured storage provider and configures it. Without a class path, the provider shares
+ * the broker class loader; with one, it runs in an isolated dependency runtime behind SPI proxies.
+ */
 public final class DisklessEngines {
     public static final String CLASS_NAME_CONFIG = "diskless.engine.class.name";
     public static final String CLASS_PATH_CONFIG = "diskless.engine.class.path";
-    public static final String CONFIG_PREFIX = "diskless.engine.config.";
+    public static final String BUILT_IN_CLASS_NAME = "io.aiven.inkless.engine.builtin.InklessStorageProvider";
 
     private DisklessEngines() {
     }
 
-    /** Checks whether the broker configuration selects an external storage provider. */
-    public static boolean isConfigured(Map<String, ?> configs) {
-        return configs.containsKey(CLASS_NAME_CONFIG);
+    /** Checks whether the broker configuration selects a provider other than the built-in one. */
+    public static boolean isExternal(Map<String, ?> configs) {
+        return !BUILT_IN_CLASS_NAME.equals(className(configs));
     }
 
     /**
-     * Returns the process-scoped provider from the configured plugin runtime. The provider holds a
-     * runtime lease until it is closed, and each created component holds its own lease.
+     * Returns the configured process-scoped provider. An isolated provider holds a runtime lease until
+     * it is closed, and each component it creates holds its own lease.
      */
-    public static DisklessStorageProvider load(Map<String, ?> configs) {
-        Object className = configs.get(CLASS_NAME_CONFIG);
-        if (className == null) {
-            throw new ConfigException(CLASS_NAME_CONFIG, null, "A storage provider class is required");
-        }
+    public static DisklessStorageProvider load(Map<String, ?> configs, Time time) {
+        String className = className(configs);
         Object classPath = configs.get(CLASS_PATH_CONFIG);
-        URL[] urls = new URL[0];
-        if (classPath != null) {
-            try (var paths = new ChildFirstClassLoader(classPath.toString(), DisklessEngine.class.getClassLoader())) {
-                urls = paths.getURLs();
-            } catch (Exception e) {
-                throw new ConfigException(CLASS_PATH_CONFIG, classPath, "Cannot resolve plugin files: " + e.getMessage());
+        DisklessStorageProvider provider = classPath == null ? loadShared(className) : loadIsolated(className, classPath);
+        try {
+            provider.configure(new DisklessProviderContext(configs, time));
+            return provider;
+        } catch (Throwable e) {
+            try {
+                provider.close();
+            } catch (Throwable closeFailure) {
+                e.addSuppressed(closeFailure);
             }
-            if (urls.length == 0) {
-                throw new ConfigException(CLASS_PATH_CONFIG, classPath, "No plugin files found");
-            }
+            throw propagate(className, e);
         }
+    }
+
+    private static String className(Map<String, ?> configs) {
+        Object className = configs.get(CLASS_NAME_CONFIG);
+        return className == null ? BUILT_IN_CLASS_NAME : className.toString();
+    }
+
+    private static DisklessStorageProvider loadShared(String className) {
+        try {
+            return Utils.newInstance(className, DisklessStorageProvider.class);
+        } catch (ClassNotFoundException e) {
+            throw new ConfigException(CLASS_NAME_CONFIG, className, "Storage provider class not found");
+        }
+    }
+
+    private static DisklessStorageProvider loadIsolated(String className, Object classPath) {
+        URL[] urls;
+        try (var paths = new ChildFirstClassLoader(classPath.toString(), DisklessEngine.class.getClassLoader())) {
+            urls = paths.getURLs();
+        } catch (Exception e) {
+            throw new ConfigException(CLASS_PATH_CONFIG, classPath, "Cannot resolve plugin files: " + e.getMessage());
+        }
+        if (urls.length == 0) {
+            throw new ConfigException(CLASS_PATH_CONFIG, classPath, "No plugin files found");
+        }
+        return loadIsolated(className, urls);
+    }
+
+    // Visible for testing: an empty URL array isolates the provider behind proxies on the broker loader.
+    static DisklessStorageProvider loadIsolated(String className, URL[] urls) {
         DisklessClassLoaderRegistry.Lease lease = null;
         try {
             lease = DisklessClassLoaderRegistry.acquire(urls, DisklessEngine.class.getClassLoader());
             var classLoader = lease.classLoader();
             DisklessStorageProvider provider = DisklessClassLoaderContext.call(classLoader, () -> Utils.newInstance(
-                Class.forName(className.toString(), true, classLoader).asSubclass(DisklessStorageProvider.class)));
-            return new IsolatedProvider(className.toString(), urls, provider, lease);
+                Class.forName(className, true, classLoader).asSubclass(DisklessStorageProvider.class)));
+            return new IsolatedProvider(className, urls, provider, lease);
         } catch (Throwable e) {
             if (lease != null) {
                 DisklessClassLoaderRegistry.closeLeaseOnFailure(lease, e);
             }
-            throw propagate(className.toString(), e);
+            throw propagate(className, e);
         }
-    }
-
-    /** Returns the provider settings with the {@code diskless.engine.config.} prefix removed. */
-    public static Map<String, Object> providerConfigs(Map<String, ?> configs) {
-        Map<String, Object> properties = new HashMap<>();
-        configs.forEach((key, value) -> {
-            if (key.startsWith(CONFIG_PREFIX)) {
-                properties.put(key.substring(CONFIG_PREFIX.length()), value);
-            }
-        });
-        return Map.copyOf(properties);
     }
 
     private static RuntimeException propagate(String className, Throwable e) {
@@ -125,8 +145,16 @@ public final class DisklessEngines {
         }
 
         @Override
-        public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) {
-            return create(DisklessTopicLifecycle.class, classLoader -> delegate.createTopicLifecycle(context));
+        public void configure(DisklessProviderContext context) throws Exception {
+            DisklessClassLoaderContext.call(lease.classLoader(), () -> {
+                delegate.configure(context);
+                return null;
+            });
+        }
+
+        @Override
+        public DisklessTopicLifecycle createTopicLifecycle() {
+            return create(DisklessTopicLifecycle.class, classLoader -> delegate.createTopicLifecycle());
         }
 
         private <T> T create(Class<T> type, ComponentFactory<T> factory) {

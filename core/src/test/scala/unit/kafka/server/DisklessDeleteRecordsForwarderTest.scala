@@ -16,7 +16,7 @@
  */
 package kafka.server
 
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import org.apache.kafka.clients.NetworkClient
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsPartitionResult
 import org.apache.kafka.common.network.ListenerName
@@ -38,7 +38,7 @@ class DisklessDeleteRecordsForwarderTest {
   private val config: KafkaConfig = mock(classOf[KafkaConfig])
   private val networkClient: NetworkClient = mock(classOf[NetworkClient])
   private val metadataCache: MetadataCache = mock(classOf[MetadataCache])
-  private val metadataView: InklessMetadataView = mock(classOf[InklessMetadataView])
+  private val metadataView: KafkaDisklessTopicView = mock(classOf[KafkaDisklessTopicView])
 
   private var forwarder: DisklessDeleteRecordsForwarder = _
 

@@ -14,9 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine.loader;
+package kafka.server.diskless;
 
 import org.apache.kafka.common.TopicIdPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
@@ -37,6 +38,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -45,9 +47,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
-import io.aiven.inkless.engine.DisklessLifecycleContext;
+import io.aiven.inkless.engine.DisklessMetadataSnapshot;
+import io.aiven.inkless.engine.DisklessMetadataSnapshot.TopicMetadata;
+import io.aiven.inkless.engine.DisklessProviderContext;
 import io.aiven.inkless.engine.DisklessRequestContext;
 import io.aiven.inkless.engine.DisklessStorageProvider;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
 import io.aiven.inkless.engine.FetchProbing;
 import io.aiven.inkless.engine.LogTiering;
@@ -56,6 +61,7 @@ import io.aiven.inkless.engine.PartitionPlacement;
 import io.aiven.inkless.engine.RecordDeletion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -64,6 +70,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
@@ -71,9 +78,34 @@ import static org.mockito.Mockito.when;
 
 public class DisklessEnginesTest {
     /** Returns a broker context with placeholder services for loader and routing tests. */
-    public static DisklessEngineContext testContext(Map<String, ?> configs, Scheduler scheduler) {
-        return new DisklessEngineContext(configs, 0, Time.SYSTEM, scheduler,
-            () -> topicId -> Optional.empty(), Map::of);
+    public static DisklessEngineContext testContext(Scheduler scheduler) {
+        return new DisklessEngineContext(0, scheduler, DisklessEnginesTest::emptySnapshot, Map::of,
+            DisklessTopicMetrics.noop());
+    }
+
+    /** Returns a snapshot of an image without diskless topics. */
+    public static DisklessMetadataSnapshot emptySnapshot() {
+        return new DisklessMetadataSnapshot() {
+            @Override
+            public Optional<TopicMetadata> topic(Uuid topicId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<TopicMetadata> topic(String name) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Collection<TopicMetadata> topics() {
+                return List.of();
+            }
+
+            @Override
+            public int brokerCount() {
+                return 0;
+            }
+        };
     }
 
     @Test
@@ -173,31 +205,54 @@ public class DisklessEnginesTest {
     }
 
     @Test
-    public void rejectsMissingProviderConfiguration() {
-        assertThrows(ConfigException.class, () -> DisklessEngines.load(Map.of()));
+    public void rejectsUnknownProviderClass() {
+        assertThrows(ConfigException.class, () -> DisklessEngines.load(
+            Map.of(DisklessEngines.CLASS_NAME_CONFIG, "io.aiven.inkless.MissingProvider"), Time.SYSTEM));
     }
 
     @Test
-    public void providerConfigsDropBrokerSettings() {
-        var config = Map.of(
-            DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName(),
-            DisklessEngines.CONFIG_PREFIX + "endpoint", "test-endpoint",
-            "unrelated.broker.setting", "private");
-        assertEquals(Map.of("endpoint", "test-endpoint"), DisklessEngines.providerConfigs(config));
+    public void defaultsToTheBuiltInProvider() {
+        assertFalse(DisklessEngines.isExternal(Map.of()));
+        assertFalse(DisklessEngines.isExternal(Map.of(DisklessEngines.CLASS_NAME_CONFIG, DisklessEngines.BUILT_IN_CLASS_NAME)));
+        assertTrue(DisklessEngines.isExternal(Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName())));
+    }
+
+    @Test
+    public void sharedProviderIsConfiguredWithTheBrokerConfiguration() throws Exception {
+        var configs = Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName(),
+            "diskless.engine.config.endpoint", "test-endpoint");
+        try (var construction = mockConstruction(TestProvider.class)) {
+            var provider = DisklessEngines.load(configs, Time.SYSTEM);
+            assertSame(construction.constructed().get(0), provider);
+            var captured = ArgumentCaptor.forClass(DisklessProviderContext.class);
+            verify(construction.constructed().get(0)).configure(captured.capture());
+            assertEquals(configs, captured.getValue().configs());
+        }
+    }
+
+    @Test
+    public void failedConfigurationClosesTheProvider() throws Exception {
+        var failure = new IllegalStateException("Metadata store unavailable");
+        try (var construction = mockConstruction(TestProvider.class, (provider, ignored) ->
+            doThrow(failure).when(provider).configure(any()))) {
+            assertSame(failure, assertThrows(IllegalStateException.class, () -> DisklessEngines.load(
+                Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName()), Time.SYSTEM)));
+            verify(construction.constructed().get(0)).close();
+        }
     }
 
     @Test
     public void loadedEngineReceivesPluginSchedulerAndOwnsItsRuntime() throws Exception {
         var scheduler = mock(Scheduler.class);
-        var context = testContext(Map.of("endpoint", "test-endpoint"), scheduler);
+        var context = testContext(scheduler);
         var engine = mock(DisklessEngine.class);
         try (var construction = mockConstruction(TestProvider.class, (provider, ignored) ->
             when(provider.createBrokerEngine(any())).thenReturn(engine))) {
-            var provider = DisklessEngines.load(Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName()));
+            var provider = DisklessEngines.loadIsolated(TestProvider.class.getName(), new URL[0]);
             try (var loaded = provider.createBrokerEngine(context)) {
                 var captured = ArgumentCaptor.forClass(DisklessEngineContext.class);
                 verify(construction.constructed().get(0)).createBrokerEngine(captured.capture());
-                assertEquals(context.configs(), captured.getValue().configs());
+                assertSame(context.metrics(), captured.getValue().metrics());
                 assertNotSame(scheduler, captured.getValue().scheduler());
                 assertInstanceOf(DisklessEngine.class, loaded);
             }
@@ -207,10 +262,10 @@ public class DisklessEnginesTest {
 
     @Test
     public void providerIsSharedByComponentsAndClosesOnce() throws Exception {
-        var context = testContext(Map.of(), mock(Scheduler.class));
+        var context = testContext(mock(Scheduler.class));
         try (var construction = mockConstruction(TestProvider.class, (provider, ignored) ->
             when(provider.createBrokerEngine(any())).thenAnswer(invocation -> mock(DisklessEngine.class)))) {
-            var provider = DisklessEngines.load(Map.of(DisklessEngines.CLASS_NAME_CONFIG, TestProvider.class.getName()));
+            var provider = DisklessEngines.loadIsolated(TestProvider.class.getName(), new URL[0]);
             var first = provider.createBrokerEngine(context);
             var second = provider.createBrokerEngine(context);
             assertEquals(1, construction.constructed().size());
@@ -265,12 +320,16 @@ public class DisklessEnginesTest {
 
     public static class TestProvider implements DisklessStorageProvider {
         @Override
+        public void configure(DisklessProviderContext context) {
+        }
+
+        @Override
         public DisklessEngine createBrokerEngine(DisklessEngineContext context) {
             return new TestEngine();
         }
 
         @Override
-        public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) {
+        public DisklessTopicLifecycle createTopicLifecycle() {
             throw new UnsupportedOperationException("Test must supply controller behavior");
         }
     }

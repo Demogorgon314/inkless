@@ -289,7 +289,7 @@ class ControllerServer(
         time,
         s"controller-${config.nodeId}-", ProcessRole.ControllerRole.toString)
       clientQuotaMetadataManager = new ClientQuotaMetadataManager(quotaManagers, socketServer.connectionQuotas)
-      disklessControllerStorage = DisklessEngineFactory.createControllerStorage(config, sharedServer.disklessStorageProvider)
+      disklessControllerStorage = DisklessEngineFactory.createControllerStorage(sharedServer.disklessStorageProvider)
       controllerApis = new ControllerApis(socketServer.dataPlaneRequestChannel,
         authorizerPlugin,
         quotaManagers,

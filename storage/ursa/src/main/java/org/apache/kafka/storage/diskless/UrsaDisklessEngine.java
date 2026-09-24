@@ -18,9 +18,11 @@ package org.apache.kafka.storage.diskless;
 
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.internal.MemoryRecords;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
@@ -43,6 +45,7 @@ import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
 import io.aiven.inkless.engine.DisklessMetadataSnapshot;
 import io.aiven.inkless.engine.DisklessRequestContext;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.engine.PartitionPlacement;
 
 /** Bridges the broker SPI to the storage implementation copied from UFK. */
@@ -53,13 +56,15 @@ public final class UrsaDisklessEngine implements DisklessEngine {
     private final Supplier<DisklessMetadataSnapshot> metadata;
     private final Scheduler scheduler;
     private final PartitionPlacement placement = new UrsaPartitionPlacement();
+    private final DisklessTopicMetrics metrics;
     private ScheduledFuture<?> maintenance;
     private boolean closed;
 
-    public UrsaDisklessEngine(UrsaStorageConfig config, DisklessEngineContext context) {
+    public UrsaDisklessEngine(UrsaStorageConfig config, Time time, DisklessEngineContext context) {
         this.metadata = context.metadata();
         this.scheduler = context.scheduler();
-        storage = new UrsaStorageEngineImpl(context.time(), context.brokerId(), config,
+        this.metrics = context.metrics();
+        storage = new UrsaStorageEngineImpl(time, context.brokerId(), config,
             context.brokerLogDefaults(), context.metadata());
     }
 
@@ -97,13 +102,38 @@ public final class UrsaDisklessEngine implements DisklessEngine {
         // Producer state must keep the same identity when the request moves to another broker.
         // Client routing hints do not establish zone ownership. Preserve UFK's unzoned namespace
         // until zone selection and owner reconciliation are introduced together.
-        return storage.write(records, DisklessClientZone.NO_ZONE);
+        records.keySet().forEach(partition -> metrics.markProduceRequest(partition.topic()));
+        return storage.write(records, DisklessClientZone.NO_ZONE).whenComplete((responses, failure) ->
+            records.forEach((partition, batch) -> {
+                var response = responses == null ? null : responses.get(partition);
+                if (response != null && response.error == Errors.NONE) {
+                    metrics.markBytesIn(partition.topic(), batch.sizeInBytes(), messageCount(batch));
+                } else {
+                    metrics.markFailedProduceRequest(partition.topic());
+                }
+            }));
+    }
+
+    private static long messageCount(MemoryRecords records) {
+        long count = 0;
+        for (var batch : records.batches()) {
+            count += batch.lastOffset() - batch.baseOffset() + 1;
+        }
+        return count;
     }
 
     @Override
     public CompletableFuture<Map<TopicIdPartition, FetchPartitionData>> fetch(
         FetchParams params, Map<TopicIdPartition, FetchRequest.PartitionData> partitions) {
-        return storage.fetch(params, partitions);
+        return storage.fetch(params, partitions).whenComplete((results, failure) ->
+            partitions.keySet().forEach(partition -> {
+                var result = results == null ? null : results.get(partition);
+                if (result != null && result.error == Errors.NONE) {
+                    metrics.markFetchRequest(partition.topic());
+                } else {
+                    metrics.markFailedFetchRequest(partition.topic());
+                }
+            }));
     }
 
     @Override

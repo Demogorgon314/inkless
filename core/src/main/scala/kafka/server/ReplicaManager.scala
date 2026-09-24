@@ -17,7 +17,6 @@
 package kafka.server
 
 import com.yammer.metrics.core.Meter
-import io.aiven.inkless.consume.ConcatenatedRecords
 import io.aiven.inkless.engine.{DisklessEngine, DisklessRequestContext, FetchProbing, LogTiering, LogTransition, OffsetReader, RecordDeletion}
 import io.aiven.inkless.engine.FetchProbing.{FetchAvailability, FetchProbe}
 import io.aiven.inkless.engine.LogTransition.ProducerState
@@ -477,8 +476,8 @@ class ReplicaManager(val config: KafkaConfig,
     remoteLogManager.foreach(rlm => rlm.setDelayedOperationPurgatory(delayedRemoteListOffsetsPurgatory))
 
     disklessEngine.foreach(_.start())
-    inklessConsolidatedDisklessLogPruner.foreach { pruner =>
-      val intervalMs = config.inklessConfig.consolidationCleanupInterval().toMillis
+    for (pruner <- inklessConsolidatedDisklessLogPruner; tiering <- logTiering) {
+      val intervalMs = tiering.reclaimIntervalMs()
       scheduler.schedule("inkless-consolidated-diskless-log-pruner", () => pruner.run(), intervalMs, intervalMs)
     }
   }
@@ -1866,7 +1865,7 @@ class ReplicaManager(val config: KafkaConfig,
    * advance. Returning empty here makes the RLM fail safe to the true remote earliest instead.
    *
    * Reads the dedicated control-plane accessor rather than the write-through
-   * [[io.aiven.inkless.cache.CrossTierLogStartCache]], since that cache is also populated by
+   * the engine cross-tier start cache, since that cache is also populated by
    * ListOffsets(EARLIEST) read-throughs and can therefore hold a COALESCE'd frontier value.
    */
   def crossTierRemoteLogStartOffset(topicPartition: TopicPartition): OptionalLong = {
@@ -1931,7 +1930,7 @@ class ReplicaManager(val config: KafkaConfig,
    * born-diskless partition has no seal; there the equivalent hazard is the control-plane earliest
    * itself degrading to the WAL prune frontier when `remote_log_start_offset` is NULL, which the raw
    * [[crossTierRemoteLogStartOffset]] guards for the irreversible reclaim path. Reads the write-through
-   * [[io.aiven.inkless.cache.CrossTierLogStartCache]] first, else queries the control plane and caches
+   * the engine cross-tier start cache first, else queries the control plane and caches
    * the hit; a stale entry can only be too low (safe: under-reclaims/over-serves).
    */
   def crossTierEarliestOffset(topicPartition: TopicPartition): OptionalLong = {
@@ -2372,7 +2371,7 @@ class ReplicaManager(val config: KafkaConfig,
    * Merges a diskless supplement into the local-log fetch result for a consolidating partition.
    * The supplement provides records beyond the local logEndOffset, and its HW/LSO supersede
    * the local values. Local records are materialized from FileRecords to MemoryRecords if needed
-   * before being passed to ConcatenatedRecords.
+   * before the merge.
    */
   private[server] def mergeConsolidationSupplement(
       tp: TopicIdPartition,
@@ -2380,7 +2379,7 @@ class ReplicaManager(val config: KafkaConfig,
       supplementData: FetchPartitionData
   ): FetchPartitionData = {
     // Local-log reads return FileRecords (a memory-mapped segment slice), not MemoryRecords.
-    // ConcatenatedRecords backs onto MemoryRecords, so materialize the local slice into a
+    // The merge copies MemoryRecords, so materialize the local slice into a
     // heap buffer first. This is the standard idiom used by AbstractFetcherThread and the
     // coordinator loaders for the same FileRecords->MemoryRecords conversion.
     val localRecords = localData.records match {
@@ -2394,7 +2393,7 @@ class ReplicaManager(val config: KafkaConfig,
         return localData
     }
     val mergedRecords = try {
-      ConcatenatedRecords.concat(localRecords, supplementData.records)
+      DisklessRecords.concat(localRecords, supplementData.records)
     } catch {
       case e: IllegalArgumentException =>
         error(s"${e.getMessage} for $tp. Returning local data only.")

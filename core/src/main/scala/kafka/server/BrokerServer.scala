@@ -355,8 +355,8 @@ class BrokerServer(
       val defaultActionQueue = new DelayedActionQueue
 
       val disklessTopicView = new KafkaDisklessTopicView(metadataCache)
-      maybeDisklessEngine = DisklessEngineFactory.create(config, time, kafkaScheduler, metadataCache,
-        brokerTopicStats, () => logManager.currentDefaultConfig, sharedServer.disklessStorageProvider)
+      maybeDisklessEngine = DisklessEngineFactory.create(config, kafkaScheduler, metadataCache,
+        brokerTopicStats, sharedServer.disklessStorageProvider)
       val logTransition = maybeDisklessEngine.flatMap(_.logTransition().toScala)
       val logTiering = maybeDisklessEngine.flatMap(_.logTiering().toScala)
 

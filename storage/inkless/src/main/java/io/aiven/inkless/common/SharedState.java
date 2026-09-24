@@ -25,7 +25,6 @@ import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -48,6 +47,7 @@ import io.aiven.inkless.config.InklessConfig;
 import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.MetadataView;
 import io.aiven.inkless.delete.CrossTierLogStartReporter;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.storage_backend.common.ObjectFetcher;
 import io.aiven.inkless.storage_backend.common.StorageBackend;
 
@@ -74,7 +74,7 @@ public final class SharedState implements Closeable {
     private final BatchCoordinateCache batchCoordinateCache;
     private final CrossTierLogStartCache crossTierLogStartCache;
     private final CrossTierLogStartReporter crossTierLogStartReporter;
-    private final BrokerTopicStats brokerTopicStats;
+    private final DisklessTopicMetrics topicMetrics;
     private final Supplier<LogConfig> defaultTopicConfigs;
     private final Metrics storageMetrics;
 
@@ -95,7 +95,7 @@ public final class SharedState implements Closeable {
         final BatchCoordinateCache batchCoordinateCache,
         final CrossTierLogStartCache crossTierLogStartCache,
         final CrossTierLogStartReporter crossTierLogStartReporter,
-        final BrokerTopicStats brokerTopicStats,
+        final DisklessTopicMetrics topicMetrics,
         final Supplier<LogConfig> defaultTopicConfigs
     ) {
         this.time = time;
@@ -114,7 +114,7 @@ public final class SharedState implements Closeable {
         this.batchCoordinateCache = batchCoordinateCache;
         this.crossTierLogStartCache = crossTierLogStartCache;
         this.crossTierLogStartReporter = crossTierLogStartReporter;
-        this.brokerTopicStats = brokerTopicStats;
+        this.topicMetrics = topicMetrics;
         this.defaultTopicConfigs = defaultTopicConfigs;
     }
 
@@ -124,7 +124,7 @@ public final class SharedState implements Closeable {
         InklessConfig config,
         MetadataView metadata,
         ControlPlane controlPlane,
-        BrokerTopicStats brokerTopicStats,
+        DisklessTopicMetrics topicMetrics,
         Supplier<LogConfig> defaultTopicConfigs
     ) {
         Duration maxTtl = config.fileCleanerRetentionPeriod().dividedBy(2);
@@ -191,7 +191,7 @@ public final class SharedState implements Closeable {
                 batchCoordinateCache,
                 crossTierLogStartCache,
                 crossTierLogStartReporter,
-                brokerTopicStats,
+                topicMetrics,
                 defaultTopicConfigs
             );
         } catch (Exception e) {
@@ -268,8 +268,8 @@ public final class SharedState implements Closeable {
         return crossTierLogStartReporter;
     }
 
-    public BrokerTopicStats brokerTopicStats() {
-        return brokerTopicStats;
+    public DisklessTopicMetrics topicMetrics() {
+        return topicMetrics;
     }
 
     public Supplier<LogConfig> defaultTopicConfigs() {

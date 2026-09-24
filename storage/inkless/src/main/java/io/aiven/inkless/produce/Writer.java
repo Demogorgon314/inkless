@@ -24,7 +24,6 @@ import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import com.groupcdg.pitest.annotations.DoNotMutate;
 
@@ -52,6 +51,7 @@ import io.aiven.inkless.cache.ObjectCache;
 import io.aiven.inkless.common.InklessThreadFactory;
 import io.aiven.inkless.common.ObjectKeyCreator;
 import io.aiven.inkless.control_plane.ControlPlane;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.storage_backend.common.StorageBackend;
 
 /**
@@ -86,7 +86,7 @@ class Writer implements Closeable {
     private final ScheduledExecutorService commitTickScheduler;
     private boolean closed = false;
     private final WriterMetrics writerMetrics;
-    private final BrokerTopicStats brokerTopicStats;
+    private final DisklessTopicMetrics topicMetrics;
     private Instant openedAt;
     private ScheduledFuture<?> scheduledTick;
 
@@ -104,7 +104,7 @@ class Writer implements Closeable {
            final int maxFileUploadAttempts,
            final Duration fileUploadRetryBackoff,
            final int fileUploaderThreadPoolSize,
-           final BrokerTopicStats brokerTopicStats
+           final DisklessTopicMetrics topicMetrics
     ) {
         this(
             time,
@@ -117,7 +117,7 @@ class Writer implements Closeable {
                 maxFileUploadAttempts, fileUploadRetryBackoff,
                 fileUploaderThreadPoolSize),
             new WriterMetrics(time),
-            brokerTopicStats
+            topicMetrics
         );
     }
 
@@ -128,7 +128,7 @@ class Writer implements Closeable {
            final ScheduledExecutorService commitTickScheduler,
            final FileCommitter fileCommitter,
            final WriterMetrics writerMetrics,
-           final BrokerTopicStats brokerTopicStats) {
+           final DisklessTopicMetrics topicMetrics) {
         this.time = Objects.requireNonNull(time, "time cannot be null");
         this.commitInterval = Objects.requireNonNull(commitInterval, "commitInterval cannot be null");
         if (maxBufferSize <= 0) {
@@ -138,8 +138,8 @@ class Writer implements Closeable {
         this.commitTickScheduler = Objects.requireNonNull(commitTickScheduler, "commitTickScheduler cannot be null");
         this.fileCommitter = Objects.requireNonNull(fileCommitter, "fileCommitter cannot be null");
         this.writerMetrics = Objects.requireNonNull(writerMetrics, "writerMetrics cannot be null");
-        this.brokerTopicStats = brokerTopicStats;
-        this.activeFile = new ActiveFile(time, brokerTopicStats);
+        this.topicMetrics = topicMetrics;
+        this.activeFile = new ActiveFile(time, topicMetrics);
     }
 
     CompletableFuture<Map<TopicIdPartition, PartitionResponse>> write(
@@ -241,7 +241,7 @@ class Writer implements Closeable {
     private void rotateFile(final boolean swallowInterrupted) {
         LOGGER.debug("Rotating active file");
         final ActiveFile prevActiveFile = this.activeFile;
-        this.activeFile = new ActiveFile(time, brokerTopicStats);
+        this.activeFile = new ActiveFile(time, topicMetrics);
 
         try {
             this.fileCommitter.commit(prevActiveFile.close());

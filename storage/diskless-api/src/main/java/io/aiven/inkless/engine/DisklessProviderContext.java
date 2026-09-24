@@ -16,16 +16,19 @@
  */
 package io.aiven.inkless.engine;
 
+import org.apache.kafka.common.utils.Time;
+
 import java.util.Map;
 import java.util.Objects;
 
 /**
- * Kafka-owned services supplied to a controller topic lifecycle.
+ * Process-level settings supplied to a storage provider.
  *
- * @param configs provider settings with the {@code diskless.engine.config.} prefix removed
+ * @param configs the broker's original configuration; each provider reads its own namespace
  */
-public record DisklessLifecycleContext(Map<String, ?> configs) {
-    public DisklessLifecycleContext {
+public record DisklessProviderContext(Map<String, ?> configs, Time time) {
+    public DisklessProviderContext {
         configs = Map.copyOf(Objects.requireNonNull(configs, "configs"));
+        Objects.requireNonNull(time, "time");
     }
 }

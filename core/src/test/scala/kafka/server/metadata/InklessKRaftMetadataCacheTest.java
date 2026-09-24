@@ -32,9 +32,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.List;
-import java.util.Map;
 
-import io.aiven.inkless.control_plane.MetadataView;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -56,7 +54,7 @@ class InklessKRaftMetadataCacheTest {
     void isDisklessTopic(final String topicName, final boolean expectedIsDiskless) {
         // Given a cache with a couple of diskless topics
         final KRaftMetadataCache cache = new KRaftMetadataCache(1, () -> KRaftVersion.KRAFT_VERSION_0);
-        final MetadataView metadataView = new InklessMetadataView(cache, Map::of);
+        final DisklessTopicView metadataView = new KafkaDisklessTopicView(cache);
         final List<ApiMessage> configRecords = List.of(
             new ConfigRecord()
                 .setResourceType(ResourceType.TOPIC.code())

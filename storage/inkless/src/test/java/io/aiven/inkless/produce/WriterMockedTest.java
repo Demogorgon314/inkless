@@ -27,7 +27,6 @@ import org.apache.kafka.common.record.internal.SimpleRecord;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,6 +46,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.storage_backend.common.StorageBackend;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,7 +94,7 @@ class WriterMockedTest {
     @Mock
     WriterMetrics writerMetrics;
 
-    BrokerTopicStats brokerTopicStats;
+    DisklessTopicMetrics brokerTopicStats;
 
     @Captor
     ArgumentCaptor<ClosedFile> closedFileCaptor;
@@ -104,7 +104,7 @@ class WriterMockedTest {
     @BeforeEach
     void setup() {
         recordCreator = new WriterTestUtils.RecordCreator();
-        brokerTopicStats = new BrokerTopicStats();
+        brokerTopicStats = DisklessTopicMetrics.noop();
     }
 
     @Test

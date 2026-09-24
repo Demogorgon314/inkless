@@ -29,7 +29,6 @@ import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.storage.log.FetchParams;
 import org.apache.kafka.server.storage.log.FetchPartitionData;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,6 +70,7 @@ import io.aiven.inkless.control_plane.BatchMetadata;
 import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.FindBatchRequest;
 import io.aiven.inkless.control_plane.FindBatchResponse;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.generated.FileExtent;
 import io.aiven.inkless.storage_backend.common.ObjectFetcher;
 import io.aiven.inkless.storage_backend.common.StorageBackend;
@@ -918,7 +918,7 @@ public class ReaderTest {
             0, // TTFB hedging disabled
             0, // total-time hedging disabled
             fetchMetrics,
-            new BrokerTopicStats(),
+            DisklessTopicMetrics.noop(),
             "inkless-");
     }
 
@@ -1023,7 +1023,7 @@ public class ReaderTest {
                 0, // TTFB hedging disabled
                 0, // total-time hedging disabled
                 fetchMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "inkless-");
         }
     }
@@ -1117,7 +1117,7 @@ public class ReaderTest {
                 0, // TTFB hedging disabled
                 0, // total-time hedging disabled
                 fetchMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "inkless-")) {
 
                 // Submit multiple requests to trigger rate limiting
@@ -1200,7 +1200,7 @@ public class ReaderTest {
                 0, // TTFB hedging disabled
                 0, // total-time hedging disabled
                 fetchMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "inkless-")) {
 
                 // Submit multiple requests
@@ -1339,7 +1339,7 @@ public class ReaderTest {
                 0, // TTFB hedging disabled
                 0, // total-time hedging disabled
                 fetchMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "inkless-")) {
 
                 // Create a fetch request with BOTH partitions
@@ -1438,7 +1438,7 @@ public class ReaderTest {
                 0, // TTFB hedging disabled
                 0, // total-time hedging disabled
                 fetchMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "inkless-")) {
 
                 // Submit multiple requests
@@ -1511,7 +1511,7 @@ public class ReaderTest {
                 null, // no dedicated pool — reuse fetchDataExecutor
                 null, 0, 0,
                 coldPathMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "consolidation-"
             )) {
                 // Reader constructed; close() runs at the end of the block.
@@ -1548,7 +1548,7 @@ public class ReaderTest {
                 null, // no dedicated pool — reuse consolidationDataExecutor
                 null, 0, 0,
                 coldPathMetrics,
-                new BrokerTopicStats(),
+                DisklessTopicMetrics.noop(),
                 "consolidation-"
             )) {
                 // Verify fetch with empty request works (basic wiring sanity)
@@ -1571,7 +1571,7 @@ public class ReaderTest {
                 60_000L, 0,
                 consolidationDataExecutor,   // laggingFetchDataExecutor — present
                 null, 0, 0,
-                coldPathMetrics, new BrokerTopicStats(), "consolidation-"
+                coldPathMetrics, DisklessTopicMetrics.noop(), "consolidation-"
             )).isInstanceOf(IllegalArgumentException.class)
               .hasMessageContaining("nothing to execute");
         }
@@ -1588,7 +1588,7 @@ public class ReaderTest {
                 60_000L, 0,
                 null,                        // laggingFetchDataExecutor absent, so guard 1 is skipped
                 null, 0, 0,
-                coldPathMetrics, new BrokerTopicStats(), "consolidation-",
+                coldPathMetrics, DisklessTopicMetrics.noop(), "consolidation-",
                 true                         // isConsolidationFetch
             )).isInstanceOf(IllegalArgumentException.class)
               .hasMessageContaining("isConsolidationFetch=true requires a lagging ObjectFetcher");
@@ -1611,7 +1611,7 @@ public class ReaderTest {
                     60_000L, 0,
                     consolidationDataExecutor, // laggingFetchDataExecutor == fetchDataExecutor
                     null, 0, 0,
-                    coldPathMetrics, new BrokerTopicStats(), "consolidation-"
+                    coldPathMetrics, DisklessTopicMetrics.noop(), "consolidation-"
                 )).isInstanceOf(IllegalArgumentException.class)
                   .hasMessageContaining("must be a distinct instance from fetchDataExecutor");
             } finally {
@@ -1632,7 +1632,7 @@ public class ReaderTest {
                 OBJECT_CACHE,
                 controlPlane,
                 objectFetcher,
-                mock(BrokerTopicStats.class),
+                mock(DisklessTopicMetrics.class),
                 1, // fetchMetadataThreadPoolSize
                 1, // fetchDataThreadPoolSize
                 Optional.empty(),
@@ -1656,7 +1656,7 @@ public class ReaderTest {
                 OBJECT_CACHE,
                 controlPlane,
                 objectFetcher,
-                mock(BrokerTopicStats.class),
+                mock(DisklessTopicMetrics.class),
                 1, // fetchMetadataThreadPoolSize
                 1, // fetchDataThreadPoolSize
                 Optional.of(mock(StorageBackend.class)),
@@ -1682,7 +1682,7 @@ public class ReaderTest {
                 OBJECT_CACHE,
                 controlPlane,
                 objectFetcher,
-                mock(BrokerTopicStats.class),
+                mock(DisklessTopicMetrics.class),
                 1, // fetchMetadataThreadPoolSize
                 1, // fetchDataThreadPoolSize
                 Optional.of(mock(StorageBackend.class)),
@@ -1705,7 +1705,7 @@ public class ReaderTest {
                 OBJECT_CACHE,
                 controlPlane,
                 objectFetcher,
-                mock(BrokerTopicStats.class),
+                mock(DisklessTopicMetrics.class),
                 1, // fetchMetadataThreadPoolSize
                 1, // fetchDataThreadPoolSize
                 Optional.empty(), // no storage provided

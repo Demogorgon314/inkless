@@ -19,7 +19,7 @@
 package io.aiven.inkless.consolidation
 
 import kafka.cluster.Partition
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import kafka.server.{InitialFetchState, ReplicaManager, ReplicationQuotaManager}
 import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.logger.StateChangeLogger
@@ -40,7 +40,7 @@ class ConsolidationReconcilerTest {
   private val topicId = Uuid.randomUuid()
 
   private def newReconciler(
-    metadataView: InklessMetadataView,
+    metadataView: KafkaDisklessTopicView,
     fetcherManager: ConsolidationFetcherManager = mock(classOf[ConsolidationFetcherManager]),
     initialFetchOffset: UnifiedLog => Long = _.highWatermark,
     quotaManager: ReplicationQuotaManager = mock(classOf[ReplicationQuotaManager]),
@@ -58,8 +58,8 @@ class ConsolidationReconcilerTest {
     )
   }
 
-  private def mockMetadataView(classicToDisklessStartOffset: Long): InklessMetadataView = {
-    val view = mock(classOf[InklessMetadataView])
+  private def mockMetadataView(classicToDisklessStartOffset: Long): KafkaDisklessTopicView = {
+    val view = mock(classOf[KafkaDisklessTopicView])
     when(view.isConsolidatingDisklessTopic(topicPartition.topic)).thenReturn(true)
     // A consolidating diskless topic has remote storage on (see invariant in ConsolidationReconciler).
     when(view.isRemoteStorageEnabled(topicPartition.topic)).thenReturn(true)
@@ -310,7 +310,7 @@ class ConsolidationReconcilerTest {
     // guarantees a diskless topic is remote-storage enabled, hence always consolidating. So it admits
     // and arms the partition without consulting isConsolidatingDisklessTopic. (The durable
     // remote-storage-off violation is a separate reconcile-time skip, tested elsewhere.)
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     when(view.isDisklessTopic(topicPartition.topic)).thenReturn(true)
     when(view.isRemoteStorageEnabled(topicPartition.topic)).thenReturn(true)
     when(view.getClassicToDisklessStartOffset(topicPartition)).thenReturn(100L)
@@ -332,7 +332,7 @@ class ConsolidationReconcilerTest {
   @Test
   def testStartConsolidationFetchersForCaughtUpClassicPartitionsSkipsNonDisklessTopic(): Unit = {
     // A non-diskless topic is never handed to the consolidation fetcher.
-    val view = mock(classOf[InklessMetadataView])
+    val view = mock(classOf[KafkaDisklessTopicView])
     when(view.isDisklessTopic(topicPartition.topic)).thenReturn(false)
 
     val fetcherManager = mock(classOf[ConsolidationFetcherManager])

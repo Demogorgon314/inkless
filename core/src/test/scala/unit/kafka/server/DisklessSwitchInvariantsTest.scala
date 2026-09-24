@@ -22,7 +22,6 @@ import io.aiven.inkless.config.InklessConfig
 import io.aiven.inkless.control_plane.ControlPlane
 import io.aiven.inkless.engine.builtin.InklessDisklessEngine
 import kafka.cluster.Partition
-import kafka.server.metadata.InklessMetadataView
 import kafka.utils.TestUtils
 import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.common.compress.Compression
@@ -231,12 +230,12 @@ class DisklessSwitchInvariantsTest {
     when(sharedState.config()).thenReturn(new InklessConfig(inklessConfigMap))
     when(sharedState.controlPlane()).thenReturn(mock(classOf[ControlPlane]))
     when(sharedState.maybeLaggingFetchStorage()).thenReturn(Optional.empty())
-    val inklessMetadata = mock(classOf[InklessMetadataView])
+    val inklessMetadata = mock(classOf[InklessEngineTestSupport.CombinedTopicView])
     when(inklessMetadata.isDisklessTopic(any())).thenReturn(false)
     disklessTopics.foreach(t => when(inklessMetadata.isDisklessTopic(t)).thenReturn(true))
     when(sharedState.metadata()).thenReturn(inklessMetadata)
 
-    val engine = new InklessDisklessEngine(sharedState, DisklessEngineFactory.consolidationConfig(config),
+    val engine = new InklessDisklessEngine(sharedState, InklessEngineTestSupport.consolidationConfig(config),
       time.scheduler, config.logInitialTaskDelayMs)
     val logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 

@@ -25,7 +25,7 @@ import io.aiven.inkless.engine.Fetcher
 import io.aiven.inkless.engine.FetchProbing.FetchAvailability
 import kafka.cluster.Partition
 import kafka.server._
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import kafka.utils.TestUtils
 import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.common.compress.Compression
@@ -182,13 +182,13 @@ class ConsolidationFetcherThreadTest {
 
   private def mockReplicaManager(
     partition: Partition,
-    inklessMetadataView: InklessMetadataView = null
+    disklessTopicView: KafkaDisklessTopicView = null
   ): ReplicaManager = {
     val replicaManager = mock(classOf[ReplicaManager])
     when(replicaManager.getPartitionOrException(any[TopicPartition])).thenReturn(partition)
     when(replicaManager.brokerTopicStats).thenReturn(new BrokerTopicStats)
-    val view = if (inklessMetadataView != null) inklessMetadataView else {
-      val v = mock(classOf[InklessMetadataView])
+    val view = if (disklessTopicView != null) disklessTopicView else {
+      val v = mock(classOf[KafkaDisklessTopicView])
       when(v.getClassicToDisklessStartOffset(any[TopicPartition]))
         .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
       v

@@ -20,7 +20,6 @@ package io.aiven.inkless.common;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.aiven.inkless.config.InklessConfig;
 import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.MetadataView;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.storage_backend.common.StorageBackend;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -62,7 +62,7 @@ class SharedStateTest {
     ControlPlane controlPlane;
 
     @Mock
-    BrokerTopicStats brokerTopicStats;
+    DisklessTopicMetrics brokerTopicStats;
 
     @Mock
     StorageBackend firstBackend;

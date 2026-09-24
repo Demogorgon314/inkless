@@ -20,7 +20,7 @@ import kafka.cluster.Partition
 import kafka.log.LogManager
 import kafka.server.QuotaFactory.UNBOUNDED_QUOTA
 import kafka.server.epoch.util.MockBlockingSender
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.FetchSessionHandler
 import org.apache.kafka.common.compress.Compression
@@ -395,7 +395,7 @@ class ReplicaFetcherThreadTest {
 
     when(replicaManager.localLogOrException(t1p0)).thenReturn(log)
     when(replicaManager.getPartitionOrException(t1p0)).thenReturn(partition)
-    stubInklessMetadataView(replicaManager)
+    stubDisklessTopicView(replicaManager)
 
     when(partition.localLogOrException).thenReturn(log)
     when(partition.appendRecordsToFollowerOrFutureReplica(any(), any(), any())).thenReturn(None)
@@ -476,7 +476,7 @@ class ReplicaFetcherThreadTest {
     when(replicaManager.localLogOrException(t1p0)).thenReturn(log)
     when(replicaManager.getPartitionOrException(t1p0)).thenReturn(partition)
     when(replicaManager.brokerTopicStats).thenReturn(mock(classOf[BrokerTopicStats]))
-    stubInklessMetadataView(replicaManager)
+    stubDisklessTopicView(replicaManager)
 
     when(partition.localLogOrException).thenReturn(log)
     when(partition.appendRecordsToFollowerOrFutureReplica(any(), any(), any())).thenReturn(Some(new LogAppendInfo(
@@ -709,7 +709,7 @@ class ReplicaFetcherThreadTest {
     )
     val brokerTopicStats = new BrokerTopicStats
     when(replicaManager.brokerTopicStats).thenReturn(brokerTopicStats)
-    stubInklessMetadataView(replicaManager)
+    stubDisklessTopicView(replicaManager)
 
     val replicaQuota: ReplicaQuota = mock(classOf[ReplicaQuota])
 
@@ -787,16 +787,16 @@ class ReplicaFetcherThreadTest {
     when(partition.appendRecordsToFollowerOrFutureReplica(any[MemoryRecords], any[Boolean], any[Int]))
       .thenReturn(Some(mock(classOf[LogAppendInfo])))
 
-    val inklessMetadataView: InklessMetadataView = mock(classOf[InklessMetadataView])
-    when(inklessMetadataView.getClassicToDisklessStartOffset(t1p0)).thenReturn(100L)
-    when(inklessMetadataView.isReplicaInIsr(t1p0, config.brokerId)).thenReturn(false)
+    val disklessTopicView: KafkaDisklessTopicView = mock(classOf[KafkaDisklessTopicView])
+    when(disklessTopicView.getClassicToDisklessStartOffset(t1p0)).thenReturn(100L)
+    when(disklessTopicView.isReplicaInIsr(t1p0, config.brokerId)).thenReturn(false)
 
     val replicaFetcherManager: ReplicaFetcherManager = mock(classOf[ReplicaFetcherManager])
     val replicaManager: ReplicaManager = mock(classOf[ReplicaManager])
     when(replicaManager.getPartitionOrException(any[TopicPartition])).thenReturn(partition)
     when(replicaManager.localLogOrException(t1p0)).thenReturn(log)
     when(replicaManager.brokerTopicStats).thenReturn(new BrokerTopicStats)
-    when(replicaManager.disklessTopicView()).thenReturn(inklessMetadataView)
+    when(replicaManager.disklessTopicView()).thenReturn(disklessTopicView)
     when(replicaManager.replicaFetcherManager).thenReturn(replicaFetcherManager)
 
     val thread = createReplicaFetcherThread(
@@ -876,16 +876,16 @@ class ReplicaFetcherThreadTest {
     when(partition.appendRecordsToFollowerOrFutureReplica(any[MemoryRecords], any[Boolean], any[Int]))
       .thenReturn(Some(mock(classOf[LogAppendInfo])))
 
-    val inklessMetadataView: InklessMetadataView = mock(classOf[InklessMetadataView])
-    when(inklessMetadataView.getClassicToDisklessStartOffset(t1p0)).thenReturn(classicToDisklessStartOffset)
-    when(inklessMetadataView.isReplicaInIsr(t1p0, config.brokerId)).thenReturn(replicaInIsr)
+    val disklessTopicView: KafkaDisklessTopicView = mock(classOf[KafkaDisklessTopicView])
+    when(disklessTopicView.getClassicToDisklessStartOffset(t1p0)).thenReturn(classicToDisklessStartOffset)
+    when(disklessTopicView.isReplicaInIsr(t1p0, config.brokerId)).thenReturn(replicaInIsr)
 
     val replicaFetcherManager: ReplicaFetcherManager = mock(classOf[ReplicaFetcherManager])
 
     val replicaManager: ReplicaManager = mock(classOf[ReplicaManager])
     when(replicaManager.getPartitionOrException(any[TopicPartition])).thenReturn(partition)
     when(replicaManager.brokerTopicStats).thenReturn(new BrokerTopicStats)
-    when(replicaManager.disklessTopicView()).thenReturn(inklessMetadataView)
+    when(replicaManager.disklessTopicView()).thenReturn(disklessTopicView)
     when(replicaManager.replicaFetcherManager).thenReturn(replicaFetcherManager)
 
     val replicaQuota: ReplicaQuota = mock(classOf[ReplicaQuota])
@@ -967,7 +967,7 @@ class ReplicaFetcherThreadTest {
     when(replicaManager.getPartitionOrException(any[TopicPartition])).thenReturn(partition)
     val brokerTopicStats = new BrokerTopicStats
     when(replicaManager.brokerTopicStats).thenReturn(brokerTopicStats)
-    stubInklessMetadataView(replicaManager)
+    stubDisklessTopicView(replicaManager)
 
     val replicaQuota: ReplicaQuota = mock(classOf[ReplicaQuota])
 
@@ -1005,8 +1005,8 @@ class ReplicaFetcherThreadTest {
     when(replicaManager.getPartitionOrException(t2p1)).thenReturn(partition)
   }
 
-  private def stubInklessMetadataView(replicaManager: ReplicaManager): Unit = {
-    val view: InklessMetadataView = mock(classOf[InklessMetadataView])
+  private def stubDisklessTopicView(replicaManager: ReplicaManager): Unit = {
+    val view: KafkaDisklessTopicView = mock(classOf[KafkaDisklessTopicView])
     when(view.getClassicToDisklessStartOffset(any[TopicPartition]))
       .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
     when(replicaManager.disklessTopicView()).thenReturn(view)

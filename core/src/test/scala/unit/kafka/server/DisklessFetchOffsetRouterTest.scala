@@ -17,7 +17,7 @@
 package kafka.server
 
 import kafka.server.DisklessOffsetJob
-import kafka.server.metadata.InklessMetadataView
+import kafka.server.metadata.KafkaDisklessTopicView
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.message.ListOffsetsRequestData.ListOffsetsPartition
 import org.apache.kafka.common.message.ListOffsetsResponseData.ListOffsetsPartitionResponse
@@ -43,7 +43,7 @@ class DisklessFetchOffsetRouterTest {
   private val consumerReplicaId = ListOffsetsRequest.CONSUMER_REPLICA_ID
   private val followerReplicaId = 1
 
-  private val inklessMetadataView: InklessMetadataView = mock(classOf[InklessMetadataView])
+  private val disklessTopicView: KafkaDisklessTopicView = mock(classOf[KafkaDisklessTopicView])
   private val purgatory: DelayedOperationPurgatory[DelayedRemoteListOffsets] =
     mock(classOf[DelayedOperationPurgatory[DelayedRemoteListOffsets]])
 
@@ -69,7 +69,7 @@ class DisklessFetchOffsetRouterTest {
     disklessManagedReplicasEnabled: Boolean = true,
     disklessConsolidationEnabled: Boolean = false
   ): DisklessFetchOffsetRouter =
-    new DisklessFetchOffsetRouter(inklessMetadataView, disklessManagedReplicasEnabled, disklessConsolidationEnabled, purgatory)
+    new DisklessFetchOffsetRouter(disklessTopicView, disklessManagedReplicasEnabled, disklessConsolidationEnabled, purgatory)
 
   private def makePartition(timestamp: Long, partitionIndex: Int): ListOffsetsPartition =
     new ListOffsetsPartition().setPartitionIndex(partitionIndex).setTimestamp(timestamp)
@@ -133,7 +133,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def routesToDisklessWhenNotSwitched(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.LATEST_TIMESTAMP)
 
@@ -147,7 +147,7 @@ class DisklessFetchOffsetRouterTest {
   def routesToDisklessWhenManagedReplicasDisabledEvenWithCommittedBoundary(): Unit = {
     // classicToDisklessStartOffset > 0 but managed replicas are disabled: we treat the partition
     // as pure diskless (case 1) and never consult the classic local log.
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(newRouter(disklessManagedReplicasEnabled = false), timestamp = 123L)
 
@@ -162,7 +162,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def routesToClassicWithoutFollowerAccessWhenSwitchPending(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.LATEST_TIMESTAMP)
 
@@ -177,7 +177,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def routesToClassicWithFollowerAccessWhenSwitchedAndFollowerRequest(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.LATEST_TIMESTAMP, replicaId = followerReplicaId)
 
@@ -189,7 +189,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def routesToClassicWithoutFollowerAccessWhenSwitchedFollowerClassicPrefixIsIncomplete(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(
       newRouter(),
@@ -208,7 +208,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridEarliestLocalAlwaysGoesToClassic(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP)
 
@@ -219,7 +219,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridLatestTieredAlwaysGoesToClassic(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.LATEST_TIERED_TIMESTAMP)
 
@@ -232,7 +232,7 @@ class DisklessFetchOffsetRouterTest {
   def hybridEarliestUsesClassicWhenClassicStillHasData(): Unit = {
     // logStartOffset (0) < classicToDisklessStartOffset (100), so classic side still owns the
     // earliest offset.
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.EARLIEST_TIMESTAMP, classicLogStartOffset = Some(0L))
 
@@ -244,7 +244,7 @@ class DisklessFetchOffsetRouterTest {
   @Test
   def hybridEarliestFallsThroughToDisklessWhenClassicLogIsEmpty(): Unit = {
     // logStartOffset (100) >= classicToDisklessStartOffset (100): no classic data left to scan.
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
 
     val status = route(newRouter(), timestamp = ListOffsetsRequest.EARLIEST_TIMESTAMP, classicLogStartOffset = Some(100L))
 
@@ -255,7 +255,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridSpecificTimestampReturnsClassicResultOnSyncMatch(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
     val matched = resolvedStatus(makeResponse(offset = 42L, timestamp = 123L))
 
     val status = route(newRouter(), timestamp = 123L, classicResult = matched)
@@ -267,7 +267,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridSpecificTimestampFallsBackToDisklessOnSyncNoMatch(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
     // errorCode == NONE && offset < 0  =>  classic "no match" sentinel.
     val noMatch = resolvedStatus(makeResponse(offset = -1L, errorCode = Errors.NONE.code))
 
@@ -281,7 +281,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridLatestPrefersDisklessAndDoesNotConsultClassicWhenDisklessHits(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
     // The diskless task must already be done so withFallback's thenCompose can resolve while we
     // assert the result.
     val disklessHit = new FileRecordsOrError(
@@ -300,7 +300,7 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridLatestFallsBackToClassicWhenDisklessIsEmpty(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
     // Empty FileRecordsOrError: neither exception nor offset => withFallback should fire its
     // fallback factory and consult the classic path.
     disklessTaskFuture.complete(new FileRecordsOrError(Optional.empty(), Optional.empty()))
@@ -324,7 +324,7 @@ class DisklessFetchOffsetRouterTest {
     val tp2 = new TopicPartition("diskless-topic", 1)
     val tp3 = new TopicPartition("diskless-topic", 2)
     Seq(tp1, tp2, tp3).foreach { p =>
-      when(inklessMetadataView.getClassicToDisklessStartOffset(p)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
+      when(disklessTopicView.getClassicToDisklessStartOffset(p)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
     }
 
     val router = newRouter()
@@ -348,9 +348,9 @@ class DisklessFetchOffsetRouterTest {
     // batchedTp: case 1 (pure diskless). fallbackTps: case 2 (t >= 0) with async-incomplete classic.
     val batchedTp = new TopicPartition("diskless-topic", 0)
     val fallbackTps = Seq(new TopicPartition("diskless-topic", 1), new TopicPartition("diskless-topic", 2))
-    when(inklessMetadataView.getClassicToDisklessStartOffset(batchedTp))
+    when(disklessTopicView.getClassicToDisklessStartOffset(batchedTp))
       .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-    fallbackTps.foreach(p => when(inklessMetadataView.getClassicToDisklessStartOffset(p)).thenReturn(100L))
+    fallbackTps.foreach(p => when(disklessTopicView.getClassicToDisklessStartOffset(p)).thenReturn(100L))
 
     val emptyResult = new FileRecordsOrError(Optional.empty(), Optional.empty())
 
@@ -407,7 +407,7 @@ class DisklessFetchOffsetRouterTest {
     // simulate the realistic outcome by completing the diskless task future exceptionally and
     // assert the router forwards that failure verbatim.
     
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
     val controlPlaneFailure = new RuntimeException("partition not found in the diskless control plane")
     disklessTaskFuture.completeExceptionally(controlPlaneFailure)
 
@@ -424,8 +424,8 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def routesToDisklessWhenSwitchPendingButConsolidatingTopic(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.CLASSIC_TO_DISKLESS_SWITCH_PENDING)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
 
     val status = route(
       newRouter(disklessManagedReplicasEnabled = true, disklessConsolidationEnabled = true),
@@ -440,8 +440,8 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridConsolidatingWithoutCommittedBoundaryAllowsFollowerOnEarliestLocal(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
 
     val status = route(
       newRouter(disklessManagedReplicasEnabled = true, disklessConsolidationEnabled = true),
@@ -455,8 +455,8 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def hybridConsolidatingWithoutCommittedBoundaryAllowsFollowerOnLatestTiered(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
 
     val status = route(
       newRouter(disklessManagedReplicasEnabled = true, disklessConsolidationEnabled = true),
@@ -475,8 +475,8 @@ class DisklessFetchOffsetRouterTest {
     // control-plane leg, whose list_offsets_v1 returns COALESCE(remote_log_start_offset,
     // log_start_offset) and therefore advances above 0 once cross-tier retention reclaims the
     // remote prefix. The classic leg must NOT be consulted (it would pin earliest at a stale 0).
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
     disklessTaskFuture.complete(offsetResult(50L))
 
     val status = route(
@@ -497,8 +497,8 @@ class DisklessFetchOffsetRouterTest {
     // (classicLogStartOffset 0 < classicToDisklessStartOffset 100). Even so, EARLIEST goes to the
     // broker-agnostic control plane, not the local classic log (which is frozen at the switch on
     // followers and would differ per broker): the diskless leg is consulted, the classic leg is not.
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
     disklessTaskFuture.complete(offsetResult(0L))
 
     val status = route(
@@ -519,8 +519,8 @@ class DisklessFetchOffsetRouterTest {
     // Cross-broker EARLIEST consistency guard: two brokers with different local classic log starts (leader at 60,
     // follower still frozen at 0, both below the seal of 100) must return the SAME earliest. Both
     // route to the control plane, so neither consults its local classic log.
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
 
     Seq(Some(0L), Some(60L)).foreach { localClassicLogStart =>
       classicCalls.clear()
@@ -533,7 +533,7 @@ class DisklessFetchOffsetRouterTest {
         m
       }
       val status = new DisklessFetchOffsetRouter(
-        inklessMetadataView, true, true, purgatory).route(
+        disklessTopicView, true, true, purgatory).route(
         job = jobForBroker,
         newJob = () => throw new AssertionError("newJob() should not be called by this routing path"),
         topicPartition = tp,
@@ -559,8 +559,8 @@ class DisklessFetchOffsetRouterTest {
     // Switched-then-consolidated topic whose classic prefix has been fully reclaimed
     // (classicLogStartOffset 100 >= classicToDisklessStartOffset 100): no classic data left, so
     // EARLIEST is served by the control-plane leg and the classic path is NOT consulted.
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
     disklessTaskFuture.complete(offsetResult(120L))
 
     val status = route(
@@ -578,8 +578,8 @@ class DisklessFetchOffsetRouterTest {
 
   @Test
   def consolidatingEarliestWithCommittedBoundaryRoutesToDisklessEvenWhenPrefixIncomplete(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(100L)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
     disklessTaskFuture.complete(offsetResult(5L))
     // The local classic prefix is incomplete here, but EARLIEST for a consolidating topic is served
     // by the control plane, so local completeness is irrelevant and the classic leg is never consulted.
@@ -598,8 +598,8 @@ class DisklessFetchOffsetRouterTest {
   
   @Test
   def consolidatingFollowerOnLatestTimestampRoutesThroughDisklessFirst(): Unit = {
-    when(inklessMetadataView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
-    when(inklessMetadataView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
+    when(disklessTopicView.getClassicToDisklessStartOffset(tp)).thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
+    when(disklessTopicView.isConsolidatingDisklessTopic(tp.topic)).thenReturn(true)
 
     val status = route(
       newRouter(disklessManagedReplicasEnabled = true, disklessConsolidationEnabled = true),

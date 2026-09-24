@@ -17,6 +17,7 @@
  */
 package io.aiven.inkless.metadata;
 
+import org.apache.kafka.common.Node;
 import org.apache.kafka.common.message.DescribeTopicPartitionsResponseData;
 import org.apache.kafka.common.message.MetadataResponseData.MetadataResponseTopic;
 import org.apache.kafka.common.network.ListenerName;
@@ -38,10 +39,15 @@ import io.aiven.inkless.engine.PartitionPlacement.Placement;
  * placement tests can assert on complete responses. This module cannot depend on core.
  */
 final class PlacementResponseWriter {
-    private final MetadataView metadataView;
+    /** Adds the live brokers that Kafka supplies to placement. */
+    interface Metadata extends MetadataView {
+        List<Node> getAliveBrokerNodes(ListenerName listenerName);
+    }
+
+    private final Metadata metadataView;
     private final PartitionPlacement placement;
 
-    PlacementResponseWriter(final MetadataView metadataView, final PartitionPlacement placement) {
+    PlacementResponseWriter(final Metadata metadataView, final PartitionPlacement placement) {
         this.metadataView = Objects.requireNonNull(metadataView, "metadataView cannot be null");
         this.placement = Objects.requireNonNull(placement, "placement cannot be null");
     }

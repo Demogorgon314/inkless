@@ -16,87 +16,97 @@
  */
 package io.aiven.inkless.engine.builtin;
 
+import org.apache.kafka.common.config.AbstractConfig;
+import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.utils.Time;
-import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
+import org.apache.kafka.server.config.ServerConfigs;
+import org.apache.kafka.server.config.ServerLogConfigs;
 
-import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Supplier;
 
 import io.aiven.inkless.common.SharedState;
 import io.aiven.inkless.config.InklessConfig;
 import io.aiven.inkless.control_plane.ControlPlane;
-import io.aiven.inkless.control_plane.MetadataView;
 import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
-import io.aiven.inkless.engine.DisklessLifecycleContext;
+import io.aiven.inkless.engine.DisklessProviderContext;
 import io.aiven.inkless.engine.DisklessStorageProvider;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
+import io.aiven.inkless.metadata.SnapshotMetadataView;
 
-/**
- * Creates the built-in Inkless components in the broker runtime.
- *
- * <p>The process-scoped provider owns the control plane that the broker and controller roles share.
- * Broker engines additionally need Inkless-specific broker services, which the broker attaches with
- * {@link #withBrokerServices}; the returned view borrows the control plane.
- */
+/** Built-in provider. Reads the {@code inkless.} settings and the Kafka settings that shape its engine. */
 public final class InklessStorageProvider implements DisklessStorageProvider {
     /** Consolidation fetch settings; present only when Kafka runs consolidation fetchers. */
     public record ConsolidationConfig(int metadataThreads, int dataThreads,
                                       int requestRateLimit, int maxBatchesPerPartition) { }
 
-    /** Inkless-specific broker dependencies that the storage-neutral context does not carry. */
-    public record BrokerServices(MetadataView metadata,
-                                 BrokerTopicStats metrics,
-                                 Supplier<LogConfig> defaultLogConfig,
-                                 Optional<ConsolidationConfig> consolidation,
-                                 long initialTaskDelayMs) {
-        public BrokerServices {
-            Objects.requireNonNull(metadata, "metadata");
-            Objects.requireNonNull(metrics, "metrics");
-            Objects.requireNonNull(defaultLogConfig, "defaultLogConfig");
-            Objects.requireNonNull(consolidation, "consolidation");
+    // Kafka validates these settings when it parses the broker configuration.
+    private static final ConfigDef KAFKA_SETTINGS = new ConfigDef()
+        .define(ServerConfigs.DISKLESS_REMOTE_STORAGE_CONSOLIDATION_ENABLE_CONFIG, ConfigDef.Type.BOOLEAN,
+            ServerConfigs.DISKLESS_REMOTE_STORAGE_CONSOLIDATION_ENABLE_DEFAULT, ConfigDef.Importance.LOW, "")
+        .define(ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_METADATA_THREAD_POOL_SIZE_CONFIG, ConfigDef.Type.INT,
+            ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_METADATA_THREAD_POOL_SIZE_DEFAULT, ConfigDef.Importance.LOW, "")
+        .define(ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_DATA_THREAD_POOL_SIZE_CONFIG, ConfigDef.Type.INT,
+            ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_DATA_THREAD_POOL_SIZE_DEFAULT, ConfigDef.Importance.LOW, "")
+        .define(ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_LAGGING_REQUEST_RATE_LIMIT_CONFIG, ConfigDef.Type.INT,
+            ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_LAGGING_REQUEST_RATE_LIMIT_DEFAULT, ConfigDef.Importance.LOW, "")
+        .define(ServerConfigs.DISKLESS_CONSOLIDATION_FIND_BATCHES_MAX_PER_PARTITION_CONFIG, ConfigDef.Type.INT,
+            ServerConfigs.DISKLESS_CONSOLIDATION_FIND_BATCHES_MAX_PER_PARTITION_DEFAULT, ConfigDef.Importance.LOW, "")
+        .define(ServerLogConfigs.LOG_INITIAL_TASK_DELAY_MS_CONFIG, ConfigDef.Type.LONG,
+            ServerLogConfigs.LOG_INITIAL_TASK_DELAY_MS_DEFAULT, ConfigDef.Importance.LOW, "");
+
+    private record Configured(InklessConfig config, Time time, ControlPlane controlPlane,
+                              Optional<ConsolidationConfig> consolidation, long initialTaskDelayMs) { }
+
+    private final ControlPlane borrowedControlPlane;
+    private volatile Configured configured;
+
+    public InklessStorageProvider() {
+        this(null);
+    }
+
+    private InklessStorageProvider(ControlPlane borrowedControlPlane) {
+        this.borrowedControlPlane = borrowedControlPlane;
+    }
+
+    /** Returns a provider that uses an existing control plane and leaves it open on close, for tests. */
+    public static InklessStorageProvider borrowing(ControlPlane controlPlane) {
+        if (controlPlane == null) {
+            throw new NullPointerException("controlPlane");
         }
+        return new InklessStorageProvider(controlPlane);
     }
 
-    private final InklessConfig config;
-    private final ControlPlane controlPlane;
-    private final boolean ownsControlPlane;
-    private final Optional<BrokerServices> broker;
-
-    private InklessStorageProvider(InklessConfig config, ControlPlane controlPlane, boolean ownsControlPlane,
-                                   Optional<BrokerServices> broker) {
-        this.config = config;
-        this.controlPlane = Objects.requireNonNull(controlPlane, "controlPlane");
-        this.ownsControlPlane = ownsControlPlane;
-        this.broker = broker;
-    }
-
-    /** Creates the process-scoped provider, which owns a new control plane. */
-    public static InklessStorageProvider create(InklessConfig config, Time time) {
-        return new InklessStorageProvider(config, ControlPlane.create(config, time), true, Optional.empty());
-    }
-
-    /** Returns a provider that borrows an existing control plane, for tests and embedding. */
-    public static InklessStorageProvider borrowing(InklessConfig config, ControlPlane controlPlane) {
-        return new InklessStorageProvider(config, controlPlane, false, Optional.empty());
-    }
-
-    /** Returns a view that creates broker engines with the supplied services and borrows the control plane. */
-    public InklessStorageProvider withBrokerServices(BrokerServices services) {
-        return new InklessStorageProvider(config, controlPlane, false, Optional.of(services));
+    @Override
+    public synchronized void configure(DisklessProviderContext context) {
+        if (configured != null) {
+            throw new IllegalStateException("Provider is already configured");
+        }
+        var settings = new AbstractConfig(KAFKA_SETTINGS, context.configs(), false);
+        var config = new InklessConfig(settings);
+        Optional<ConsolidationConfig> consolidation = Optional.empty();
+        if (settings.getBoolean(ServerConfigs.DISKLESS_REMOTE_STORAGE_CONSOLIDATION_ENABLE_CONFIG)) {
+            consolidation = Optional.of(new ConsolidationConfig(
+                settings.getInt(ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_METADATA_THREAD_POOL_SIZE_CONFIG),
+                settings.getInt(ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_DATA_THREAD_POOL_SIZE_CONFIG),
+                settings.getInt(ServerConfigs.DISKLESS_CONSOLIDATION_FETCH_LAGGING_REQUEST_RATE_LIMIT_CONFIG),
+                settings.getInt(ServerConfigs.DISKLESS_CONSOLIDATION_FIND_BATCHES_MAX_PER_PARTITION_CONFIG)));
+        }
+        var controlPlane = borrowedControlPlane != null
+            ? borrowedControlPlane : ControlPlane.create(config, context.time());
+        configured = new Configured(config, context.time(), controlPlane, consolidation,
+            settings.getLong(ServerLogConfigs.LOG_INITIAL_TASK_DELAY_MS_CONFIG));
     }
 
     @Override
     public DisklessEngine createBrokerEngine(DisklessEngineContext context) {
-        var services = broker.orElseThrow(() ->
-            new IllegalStateException("Broker services are required to create a broker engine"));
-        var state = SharedState.initialize(context.time(), context.brokerId(), config,
-            services.metadata(), controlPlane, services.metrics(), services.defaultLogConfig());
+        var provider = configured();
+        var metadata = new SnapshotMetadataView(context.metadata(), context.brokerLogDefaults());
+        var state = SharedState.initialize(provider.time(), context.brokerId(), provider.config(), metadata,
+            provider.controlPlane(), context.metrics(), metadata::defaultLogConfig);
         try {
-            return new InklessDisklessEngine(state, services.consolidation(), context.scheduler(),
-                services.initialTaskDelayMs());
+            return new InklessDisklessEngine(state, provider.consolidation(), context.scheduler(),
+                provider.initialTaskDelayMs());
         } catch (RuntimeException | Error failure) {
             try {
                 state.close();
@@ -108,14 +118,23 @@ public final class InklessStorageProvider implements DisklessStorageProvider {
     }
 
     @Override
-    public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) {
-        return new InklessTopicLifecycle(controlPlane);
+    public DisklessTopicLifecycle createTopicLifecycle() {
+        return new InklessTopicLifecycle(configured().controlPlane());
     }
 
     @Override
-    public void close() throws Exception {
-        if (ownsControlPlane) {
-            controlPlane.close();
+    public synchronized void close() throws Exception {
+        var provider = configured;
+        if (provider != null && borrowedControlPlane == null) {
+            provider.controlPlane().close();
         }
+    }
+
+    private Configured configured() {
+        var provider = configured;
+        if (provider == null) {
+            throw new IllegalStateException("Provider is not configured");
+        }
+        return provider;
     }
 }

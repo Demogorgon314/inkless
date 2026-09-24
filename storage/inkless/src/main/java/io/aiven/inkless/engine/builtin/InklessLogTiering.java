@@ -50,7 +50,7 @@ final class InklessLogTiering implements LogTiering, Closeable {
         this.state = state;
         this.fetchHandler = config.map(c -> new FetchHandler(new Reader(
             state.time(), state.objectKeyCreator(), state.keyAlignmentStrategy(), state.cache(),
-            state.controlPlane(), state.fetchStorage(), state.brokerTopicStats(),
+            state.controlPlane(), state.fetchStorage(), state.topicMetrics(),
             c.metadataThreads(), c.dataThreads(),
             // Consolidation uses the background cold path and its own data pool, with no hedging.
             Optional.of(state.backgroundStorage()), state.config().fetchLaggingConsumerThresholdMs(),
@@ -111,6 +111,11 @@ final class InklessLogTiering implements LogTiering, Closeable {
     @Override
     public void reportRemoteLogStartOffset(TopicIdPartition partition, long offset) {
         state.crossTierLogStartReporter().enqueue(partition.topicPartition(), offset);
+    }
+
+    @Override
+    public long reclaimIntervalMs() {
+        return state.config().consolidationCleanupInterval().toMillis();
     }
 
     @Override

@@ -16,7 +16,6 @@
  */
 package io.aiven.inkless.engine;
 
-import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.util.Scheduler;
 
 import java.util.Map;
@@ -24,29 +23,28 @@ import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
- * Kafka-owned services supplied to a broker engine.
+ * Kafka-owned services supplied to a broker engine. Process-level settings arrive earlier, through
+ * {@link DisklessStorageProvider#configure(DisklessProviderContext)}.
  *
- * @param configs provider settings with the {@code diskless.engine.config.} prefix removed
  * @param scheduler the broker scheduler; Kafka owns its lifecycle, so the engine only schedules tasks
  * @param metadata captures one committed image per call; call it once per request or maintenance pass
  * @param brokerLogDefaults returns the current broker log defaults, including dynamic updates
+ * @param metrics the broker topic metrics that the engine reports its request outcomes to
  */
-public record DisklessEngineContext(Map<String, ?> configs,
-                                    int brokerId,
-                                    Time time,
+public record DisklessEngineContext(int brokerId,
                                     Scheduler scheduler,
                                     Supplier<DisklessMetadataSnapshot> metadata,
-                                    Supplier<Map<String, ?>> brokerLogDefaults) {
+                                    Supplier<Map<String, ?>> brokerLogDefaults,
+                                    DisklessTopicMetrics metrics) {
     public DisklessEngineContext {
-        configs = Map.copyOf(Objects.requireNonNull(configs, "configs"));
-        Objects.requireNonNull(time, "time");
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(metadata, "metadata");
         Objects.requireNonNull(brokerLogDefaults, "brokerLogDefaults");
+        Objects.requireNonNull(metrics, "metrics");
     }
 
     /** Returns a copy that uses the supplied scheduler. */
     public DisklessEngineContext withScheduler(Scheduler replacement) {
-        return new DisklessEngineContext(configs, brokerId, time, replacement, metadata, brokerLogDefaults);
+        return new DisklessEngineContext(brokerId, replacement, metadata, brokerLogDefaults, metrics);
     }
 }

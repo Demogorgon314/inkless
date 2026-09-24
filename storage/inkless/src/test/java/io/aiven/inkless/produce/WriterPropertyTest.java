@@ -30,7 +30,6 @@ import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 import org.apache.kafka.test.TestUtils;
 
 import net.jqwik.api.Arbitraries;
@@ -77,6 +76,7 @@ import io.aiven.inkless.control_plane.ControlPlane;
 import io.aiven.inkless.control_plane.CreateTopicAndPartitionsRequest;
 import io.aiven.inkless.control_plane.InMemoryControlPlane;
 import io.aiven.inkless.control_plane.postgres.PostgresControlPlane;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.storage_backend.common.StorageBackend;
 import io.aiven.inkless.test_utils.InklessPostgreSQLContainer;
 import io.aiven.inkless.test_utils.PostgreSQLTestContainer;
@@ -250,7 +250,7 @@ class WriterPropertyTest {
                 mock(ScheduledExecutorService.class),
                 fileCommitter,
                 mock(WriterMetrics.class),
-                new BrokerTopicStats()
+                DisklessTopicMetrics.noop()
             );
 
             final Arbitrary<Map<TopicIdPartition, MemoryRecords>> requestArbitrary = requests();

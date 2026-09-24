@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aiven.inkless.engine.loader;
+package kafka.server.diskless;
 
 import java.util.regex.Pattern;
 

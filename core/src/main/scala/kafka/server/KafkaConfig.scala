@@ -17,8 +17,7 @@
 
 package kafka.server
 
-import io.aiven.inkless.engine.loader.DisklessEngines
-import io.aiven.inkless.config.InklessConfig
+import kafka.server.diskless.DisklessEngines
 import java.util
 import java.util.concurrent.TimeUnit
 import java.util.Properties
@@ -206,8 +205,6 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
   private val _quotaConfig = new QuotaConfig(this)
   def quotaConfig: QuotaConfig = _quotaConfig
 
-  private val _inklessConfig = new InklessConfig(this)
-  def inklessConfig = _inklessConfig
 
   /** ********* General Configuration ***********/
   val brokerSessionTimeoutMs: Int = getInt(KRaftConfigs.BROKER_SESSION_TIMEOUT_MS_CONFIG)
@@ -551,6 +548,8 @@ class KafkaConfig private(doLog: Boolean, val props: util.Map[_, _])
   private def validateValues(): Unit = {
     if (originals.containsKey(DisklessEngines.CLASS_NAME_CONFIG)) {
       require(disklessStorageSystemEnabled, "diskless.engine.class.name requires diskless.storage.system.enable=true")
+    }
+    if (disklessStorageSystemEnabled && DisklessEngines.isExternal(originals)) {
       require(!disklessManagedReplicasEnabled,
         "External diskless engines do not support managed replicas, switching, or consolidation")
     }

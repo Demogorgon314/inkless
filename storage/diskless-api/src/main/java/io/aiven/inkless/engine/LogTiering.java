@@ -61,6 +61,9 @@ public interface LogTiering {
     /** Queues the leader's remote-start report for engine-owned persistence. */
     void reportRemoteLogStartOffset(TopicIdPartition partition, long offset);
 
+    /** Returns how often Kafka offers its safe tiered offsets to {@link #reclaimReplicatedRecords}. */
+    long reclaimIntervalMs();
+
     /** Reclaims through Kafka's inclusive safe tiered offsets; results contain the new engine-resident starts. */
     Map<TopicIdPartition, OffsetResult> reclaimReplicatedRecords(Map<TopicIdPartition, Long> highestTieredOffsets);
 }

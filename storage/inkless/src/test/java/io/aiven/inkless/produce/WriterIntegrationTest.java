@@ -28,7 +28,6 @@ import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.common.RequestLocal;
 import org.apache.kafka.storage.internals.log.LogConfig;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -55,6 +54,7 @@ import io.aiven.inkless.cache.ObjectCache;
 import io.aiven.inkless.common.ObjectKey;
 import io.aiven.inkless.control_plane.CreateTopicAndPartitionsRequest;
 import io.aiven.inkless.control_plane.InMemoryControlPlane;
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 import io.aiven.inkless.storage_backend.s3.S3Storage;
 import io.aiven.inkless.test_utils.MinioContainer;
 import io.aiven.inkless.test_utils.S3TestContainer;
@@ -140,7 +140,7 @@ class WriterIntegrationTest {
                 1,
                 Duration.ofMillis(10),
                 8,
-                new BrokerTopicStats()
+                DisklessTopicMetrics.noop()
             )
         ) {
             time.sleep(100);

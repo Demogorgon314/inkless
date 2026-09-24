@@ -21,16 +21,15 @@ import io.aiven.inkless.cache.CrossTierLogStartCache
 import io.aiven.inkless.common.SharedState
 import io.aiven.inkless.config.InklessConfig
 import io.aiven.inkless.consolidation.{ConsolidatedDisklessLogPruner, ConsolidationFetcherManager}
-import io.aiven.inkless.consume.{ConcatenatedRecords, FetchHandler, FetchOffsetHandler}
+import io.aiven.inkless.consume.{FetchHandler, FetchOffsetHandler}
 import io.aiven.inkless.control_plane.{AdvanceCrossTierLogStartOffsetResponse, BatchInfo, BatchMetadata, ControlPlane, ControlPlaneException, FindBatchResponse, RepairDisklessLogRequest, RepairDisklessLogResponse, DeleteRecordsResponse => CpDeleteRecordsResponse, ListOffsetsRequest => CpListOffsetsRequest, ListOffsetsResponse => CpListOffsetsResponse}
 import io.aiven.inkless.produce.AppendHandler
 import io.aiven.inkless.engine.{DisklessMetadataSnapshot, OffsetReader, RecordDeletion}
 import io.aiven.inkless.engine.builtin.InklessDisklessEngine
-import io.aiven.inkless.engine.loader.DisklessEngines
-import io.aiven.inkless.engine.loader.DisklessEnginesTest.{TestEngine => TestDisklessEngine, TestProvider => TestDisklessProvider, testContext}
+import kafka.server.diskless.DisklessEngines
+import kafka.server.diskless.DisklessEnginesTest.{TestEngine => TestDisklessEngine, TestProvider => TestDisklessProvider, testContext}
 import kafka.cluster.Partition
 import kafka.server.QuotaFactory.QuotaManagers
-import kafka.server.metadata.InklessMetadataView
 import kafka.server.share.DelayedShareFetch
 import kafka.utils.TestUtils
 import kafka.utils.TestUtils.waitUntilTrue
@@ -3569,8 +3568,9 @@ class ReplicaManagerInklessTest {
       val result = replicaManager.mergeConsolidationSupplement(disklessTopicPartition, localData, supplementData)
       assertEquals(500L, result.highWatermark)
       assertTrue(result.records.sizeInBytes > 0)
-      // Must not throw ClassCastException: FileRecords must have been converted before ConcatenatedRecords
-      assertInstanceOf(classOf[ConcatenatedRecords], result.records)
+      // Must not throw ClassCastException: FileRecords must have been materialized before the merge
+      val merged = assertInstanceOf(classOf[MemoryRecords], result.records)
+      assertEquals(List(0L, 100L), merged.batches().asScala.map(_.baseOffset()).toList)
     } finally {
       replicaManager.shutdown(checkpointHW = false)
       if (localFileRecords != null) localFileRecords.close()
@@ -3603,7 +3603,11 @@ class ReplicaManagerInklessTest {
     )
     val localData = new FetchPartitionData(Errors.NONE, 100L, 0L, localRecords,
       Optional.empty(), OptionalLong.empty(), Optional.empty(), OptionalInt.empty(), false)
-    val supplementData = new FetchPartitionData(Errors.NONE, 500L, 0L, mock(classOf[org.apache.kafka.common.record.internal.Records]),
+    val supplementRecords = mock(classOf[org.apache.kafka.common.record.internal.Records])
+    val immutableBatch: org.apache.kafka.common.record.internal.RecordBatch =
+      mock(classOf[org.apache.kafka.common.record.internal.RecordBatch])
+    doReturn(util.List.of(immutableBatch)).when(supplementRecords).batches()
+    val supplementData = new FetchPartitionData(Errors.NONE, 500L, 0L, supplementRecords,
       Optional.empty(), OptionalLong.of(500L), Optional.empty(), OptionalInt.empty(), false)
 
     val replicaManager = createReplicaManager(List(disklessTopicPartition.topic()))
@@ -8929,7 +8933,7 @@ class ReplicaManagerInklessTest {
     when(sharedState.controlPlane()).thenReturn(controlPlane.getOrElse(mock(classOf[ControlPlane])))
     when(sharedState.maybeLaggingFetchStorage()).thenReturn(Optional.empty())
     crossTierLogStartCache.foreach(cache => when(sharedState.crossTierLogStartCache()).thenReturn(cache))
-    val inklessMetadata = mock(classOf[InklessMetadataView])
+    val inklessMetadata = mock(classOf[InklessEngineTestSupport.CombinedTopicView])
     when(inklessMetadata.isDisklessTopic(any())).thenReturn(false)
     when(inklessMetadata.getClassicToDisklessStartOffset(any()))
       .thenReturn(PartitionRegistration.NO_CLASSIC_TO_DISKLESS_START_OFFSET)
@@ -8951,7 +8955,7 @@ class ReplicaManagerInklessTest {
 
     val logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
     val nativeEngine = if (engineClassName.isEmpty && inklessSharedStateEnabled)
-      Some(new InklessDisklessEngine(sharedState, DisklessEngineFactory.consolidationConfig(config),
+      Some(new InklessDisklessEngine(sharedState, InklessEngineTestSupport.consolidationConfig(config),
         time.scheduler, config.logInitialTaskDelayMs)) else None
 
     new ReplicaManager(
@@ -8965,7 +8969,7 @@ class ReplicaManagerInklessTest {
       logDirFailureChannel = logDirFailureChannel,
       alterPartitionManager = alterPartitionManager,
       disklessEngine = if (engineClassName.isDefined) {
-        Some(DisklessEngines.load(config.originals).createBrokerEngine(testContext(util.Map.of(), time.scheduler)))
+        Some(DisklessEngines.load(config.originals, Time.SYSTEM).createBrokerEngine(testContext(time.scheduler)))
       } else nativeEngine,
       disklessTopicView = Some(inklessMetadata),
       initDisklessLogManager = initDisklessLogManager,

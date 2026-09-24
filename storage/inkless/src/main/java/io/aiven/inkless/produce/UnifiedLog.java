@@ -43,7 +43,6 @@ import org.apache.kafka.storage.internals.log.LogAppendInfo;
 import org.apache.kafka.storage.internals.log.LogConfig;
 import org.apache.kafka.storage.internals.log.LogValidator;
 import org.apache.kafka.storage.internals.log.RecordValidationStats;
-import org.apache.kafka.storage.log.metrics.BrokerTopicStats;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +53,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
+
+import io.aiven.inkless.engine.DisklessTopicMetrics;
 
 import static org.apache.kafka.storage.internals.log.UnifiedLog.UNKNOWN_OFFSET;
 
@@ -94,7 +95,7 @@ class UnifiedLog {
                                                    boolean ignoreRecordSize,
                                                    boolean requireOffsetsMonotonic,
                                                    int leaderEpoch,
-                                                   BrokerTopicStats brokerTopicStats) {
+                                                   DisklessTopicMetrics metrics) {
         int validBytesCount = 0;
         long firstOffset = LocalLog.UNKNOWN_OFFSET;
         long lastOffset = -1L;
@@ -149,15 +150,14 @@ class UnifiedLog {
                 // Check if the message sizes are valid.
                 int batchSize = batch.sizeInBytes();
                 if (!ignoreRecordSize && batchSize > config.maxMessageSize()) {
-                    brokerTopicStats.topicStats(topicPartition.topic()).bytesRejectedRate().mark(records.sizeInBytes());
-                    brokerTopicStats.allTopicsStats().bytesRejectedRate().mark(records.sizeInBytes());
+                    metrics.markBytesRejected(topicPartition.topic(), records.sizeInBytes());
                     throw new RecordTooLargeException("The record batch size in the append to " + topicPartition + " is " + batchSize + " bytes " +
                         "which exceeds the maximum configured value of " + config.maxMessageSize() + ").");
                 }
 
                 // check the validity of the message by checking CRC
                 if (!batch.isValid()) {
-                    brokerTopicStats.allTopicsStats().invalidMessageCrcRecordsPerSec().mark();
+                    metrics.markInvalidRecords(DisklessTopicMetrics.InvalidRecords.CHECKSUM);
                     throw new CorruptRecordException("Record is corrupt (stored crc = " + batch.checksum() + ") in topic partition " + topicPartition + ".");
                 }
 
@@ -240,7 +240,7 @@ class UnifiedLog {
         final BatchBuffer buffer,
         final Map<TopicIdPartition, ProduceResponse.PartitionResponse> invalidBatches,
         final RequestLocal requestLocal,
-        final BrokerTopicStats brokerTopicStats,
+        final DisklessTopicMetrics metrics,
         final LogValidator.MetricsRecorder validatorMetricsRecorder
     ) {
         final LogAppendInfo appendInfo = analyzeAndValidateRecords(
@@ -252,7 +252,7 @@ class UnifiedLog {
             false,
             true, // ensures that offsets across batches on the same partition grow monotonically
             LEADER_EPOCH,
-            brokerTopicStats);
+            metrics);
 
         if (appendInfo.validBytes() <= 0) {
             // Reply with empty response for empty batches
@@ -299,8 +299,7 @@ class UnifiedLog {
                     if (batch.sizeInBytes() > config.maxMessageSize()) {
                         // we record the original message set size instead of the trimmed size
                         // to be consistent with pre-compression bytesRejectedRate recording
-                        brokerTopicStats.topicStats(topicIdPartition.topicPartition().topic()).bytesRejectedRate().mark(records.sizeInBytes());
-                        brokerTopicStats.allTopicsStats().bytesRejectedRate().mark(records.sizeInBytes());
+                        metrics.markBytesRejected(topicIdPartition.topic(), records.sizeInBytes());
                         throw new RecordTooLargeException("Message batch size is " + batch.sizeInBytes() + " bytes in append to" +
                             "partition " + topicIdPartition.topicPartition() + " which exceeds the maximum configured size of " + config.maxMessageSize() + ".");
                     }

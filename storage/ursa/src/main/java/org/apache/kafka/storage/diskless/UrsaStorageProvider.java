@@ -16,24 +16,57 @@
  */
 package org.apache.kafka.storage.diskless;
 
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.storage.diskless.handlers.UrsaDisklessTopicLifecycle;
 import org.apache.kafka.storage.diskless.handlers.UrsaStorageConfig;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import io.aiven.inkless.engine.DisklessEngine;
 import io.aiven.inkless.engine.DisklessEngineContext;
-import io.aiven.inkless.engine.DisklessLifecycleContext;
+import io.aiven.inkless.engine.DisklessProviderContext;
 import io.aiven.inkless.engine.DisklessStorageProvider;
 import io.aiven.inkless.engine.DisklessTopicLifecycle;
 
 /** Creates independent broker and controller resources from the same plugin configuration. */
 public final class UrsaStorageProvider implements DisklessStorageProvider {
+    /** Namespace of the Ursa settings in the broker configuration. */
+    public static final String CONFIG_PREFIX = "diskless.engine.config.";
+
+    private UrsaStorageConfig config;
+    private Time time;
+
     @Override
-    public DisklessEngine createBrokerEngine(DisklessEngineContext context) throws Exception {
-        return new UrsaDisklessEngine(UrsaStorageConfig.fromConfigs(context.configs()), context);
+    public void configure(DisklessProviderContext context) throws Exception {
+        config = UrsaStorageConfig.fromConfigs(withoutPrefix(context.configs()));
+        time = context.time();
     }
 
     @Override
-    public DisklessTopicLifecycle createTopicLifecycle(DisklessLifecycleContext context) throws Exception {
-        return new UrsaDisklessTopicLifecycle(UrsaStorageConfig.fromConfigs(context.configs()));
+    public DisklessEngine createBrokerEngine(DisklessEngineContext context) {
+        return new UrsaDisklessEngine(configured(), time, context);
+    }
+
+    @Override
+    public DisklessTopicLifecycle createTopicLifecycle() throws Exception {
+        return new UrsaDisklessTopicLifecycle(configured());
+    }
+
+    private UrsaStorageConfig configured() {
+        if (config == null) {
+            throw new IllegalStateException("Provider is not configured");
+        }
+        return config;
+    }
+
+    static Map<String, Object> withoutPrefix(Map<String, ?> brokerConfigs) {
+        Map<String, Object> properties = new HashMap<>();
+        brokerConfigs.forEach((key, value) -> {
+            if (key.startsWith(CONFIG_PREFIX)) {
+                properties.put(key.substring(CONFIG_PREFIX.length()), value);
+            }
+        });
+        return Map.copyOf(properties);
     }
 }
